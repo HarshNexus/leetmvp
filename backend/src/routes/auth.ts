@@ -1,0 +1,15 @@
+import { Router } from 'express';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import { z } from 'zod';
+import { User } from '../models/User';
+import { AuthRequest, requireAuth } from '../middleware/auth';
+const router = Router();
+const credentials = z.object({ email: z.email(), password: z.string().min(8).max(128) });
+const registration = credentials.extend({ name: z.string().trim().min(1, 'Name is required').max(80, 'Name must be 80 characters or fewer') });
+const tokenFor = (id: string) => jwt.sign({ userId: id }, process.env.JWT_SECRET!, { expiresIn: '7d' });
+router.post('/register', async (req, res, next) => { try { const input = registration.parse(req.body); const email = input.email.toLowerCase(); if (await User.exists({ email })) return res.status(409).json({ success:false,error:{code:'EMAIL_EXISTS',message:'Email already registered'} }); const user = await User.create({ name: input.name, email, passwordHash: await bcrypt.hash(input.password, 12) }); res.status(201).json({ success:true,data:{ token:tokenFor(user.id), user:{ id:user.id,name:user.name,email:user.email } } }); } catch(e) { next(e); } });
+router.post('/login', async (req,res,next) => { try { const input=credentials.parse(req.body); const user=await User.findOne({email:input.email.toLowerCase()}).select('+passwordHash'); if(!user || !(await bcrypt.compare(input.password,user.passwordHash))) return res.status(401).json({success:false,error:{code:'INVALID_CREDENTIALS',message:'Invalid email or password'}}); res.json({success:true,data:{token:tokenFor(user.id),user:{id:user.id,name:user.name,email:user.email}}}); } catch(e){next(e);} });
+router.get('/me', requireAuth, async (req:AuthRequest,res,next)=>{try{const user=await User.findById(req.userId); if(!user)return res.status(401).end(); res.json({success:true,data:{user:{id:user.id,name:user.name,email:user.email}}});}catch(e){next(e);}});
+router.post('/logout', (_req,res)=>res.json({success:true,data:{}}));
+export default router;

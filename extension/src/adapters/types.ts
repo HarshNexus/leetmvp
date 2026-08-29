@@ -1,0 +1,1 @@
+export type NormalizedProblem={platform:'LeetCode'|'GeeksforGeeks';questionNumber?:string|number;title:string;slug:string;url:string;difficulty?:'Easy'|'Medium'|'Hard'|null;language?:string;status:'Solved';solvedAt:string;topics?:string[];submissionId?:string};

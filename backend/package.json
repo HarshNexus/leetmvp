@@ -1,0 +1,8 @@
+{
+  "name": "@dsa-tracker/backend",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {"dev":"tsx watch src/server.ts","build":"tsc","test":"vitest run"},
+  "dependencies": {"bcryptjs":"^3.0.2","cors":"^2.8.5","dotenv":"^17.2.1","express":"^5.1.0","express-rate-limit":"^8.0.1","jsonwebtoken":"^9.0.2","mongoose":"^8.18.0","zod":"^4.0.17"},
+  "devDependencies": {"@types/cors":"^2.8.19","@types/express":"^5.0.3","@types/jsonwebtoken":"^9.0.10","@types/node":"^24.2.1","tsx":"^4.19.3","typescript":"^5.9.2","vitest":"^3.2.4"}
+}
