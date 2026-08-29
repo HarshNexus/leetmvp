@@ -1,6 +1,6 @@
 export {};
 type Pending = { payload: Record<string, unknown>; attempts: number };
-const API = 'http://localhost:5000/api';
+const API = 'https://leetmvp.onrender.com/api';
 
 async function refresh() {
   const { refreshToken } = await chrome.storage.local.get('refreshToken');

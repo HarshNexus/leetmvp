@@ -1,5 +1,5 @@
 import type { AuthResponse, DashboardAnalytics, Revision, SolvedProblem, User } from '../types';
-const base = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+const base = import.meta.env.VITE_API_URL || 'https://leetmvp.onrender.com/api';
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = localStorage.getItem('dsa_token');
   const response = await fetch(`${base}${path}`, {

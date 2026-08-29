@@ -1,7 +1,7 @@
 export {};
 const app = document.getElementById('app')!;
-const API = 'http://localhost:5000/api';
-const WEB_APP = 'http://localhost:5173';
+const API = 'https://leetmvp.onrender.com/api';
+const WEB_APP = 'https://leetmvp-1.onrender.com';
 type User = { id: string; email: string };
 
 function render(user: User | null, status = '') {
