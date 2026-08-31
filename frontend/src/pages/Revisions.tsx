@@ -2,18 +2,22 @@ import { useEffect, useMemo, useState } from 'react';
 import { api } from '../services/api';
 import type { Revision } from '../types';
 
-type StageKey = 'overdue' | 'today' | '1-day' | '7-day' | '21-day' | 'custom';
+type ReviewFilter = 'all' | 'overdue' | 'today' | 'this-week';
 type ReviewChoice = 'Solved' | 'Needed Hint' | 'Not Solved';
-type SectionKey = 'OVERDUE' | 'DUE' | 'UPCOMING';
 
-const DEFAULT_STAGE_TABS = [
+type DateGroup = {
+  key: string;
+  label: string;
+  date: Date;
+  items: Revision[];
+};
+
+const FILTERS: Array<{ key: ReviewFilter; label: string }> = [
+  { key: 'overdue', label: 'Overdue' },
   { key: 'today', label: 'Today' },
-  { key: '1-day', label: '1 Day' },
-  { key: '7-day', label: '7 Days' },
-  { key: '21-day', label: '21 Days' },
-] as const;
-
-const DEFAULT_STAGES = [1, 7, 21];
+  { key: 'this-week', label: 'This Week' },
+  { key: 'all', label: 'All' },
+];
 
 const asRevisionList = (value: unknown): Revision[] => {
   if (Array.isArray(value)) return value as Revision[];
@@ -23,9 +27,84 @@ const asRevisionList = (value: unknown): Revision[] => {
   return [];
 };
 
+const toDate = (value?: string | null) => {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const startOfDay = (value: Date) => {
+  const date = new Date(value);
+  date.setHours(0, 0, 0, 0);
+  return date;
+};
+
+const addDays = (value: Date, amount: number) => {
+  const date = new Date(value);
+  date.setDate(date.getDate() + amount);
+  return date;
+};
+
+const dateKey = (value: Date) => {
+  const date = startOfDay(value);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+};
+
+const dueDateFor = (revision: Revision) => revision.nextReviewAt || revision.scheduledAt;
+
+const isOverdue = (revision: Revision) => {
+  const dueAt = toDate(dueDateFor(revision));
+  if (!dueAt) return false;
+  return startOfDay(dueAt) < startOfDay(new Date());
+};
+
+const isToday = (revision: Revision) => {
+  const dueAt = toDate(dueDateFor(revision));
+  if (!dueAt) return false;
+  return dateKey(dueAt) === dateKey(new Date());
+};
+
+const startOfWeek = (value: Date) => {
+  const date = startOfDay(value);
+  const offset = (date.getDay() + 6) % 7;
+  date.setDate(date.getDate() - offset);
+  return date;
+};
+
+const isThisWeek = (revision: Revision) => {
+  const dueAt = toDate(dueDateFor(revision));
+  if (!dueAt) return false;
+  const today = startOfDay(new Date());
+  const weekStart = startOfWeek(today);
+  const weekEnd = addDays(weekStart, 6);
+  const dueDay = startOfDay(dueAt);
+  return dueDay >= today && dueDay <= weekEnd;
+};
+
+const filterRows = (rows: Revision[], filter: ReviewFilter) => {
+  switch (filter) {
+    case 'overdue':
+      return rows.filter((row) => isOverdue(row));
+    case 'today':
+      return rows.filter((row) => isToday(row));
+    case 'this-week':
+      return rows.filter((row) => isThisWeek(row));
+    case 'all':
+    default:
+      return rows;
+  }
+};
+
+const sortByNextReview = (a: Revision, b: Revision) => {
+  const left = toDate(dueDateFor(a))?.getTime() ?? Number.MAX_SAFE_INTEGER;
+  const right = toDate(dueDateFor(b))?.getTime() ?? Number.MAX_SAFE_INTEGER;
+  return left - right;
+};
+
 const stageDisplay = (stage?: string) => {
   const value = (stage || '').toLowerCase();
   if (!value) return '1 Day';
+  if (value === 'today') return 'Today';
   if (value === '1-day') return '1 Day';
   if (value === '7-day') return '7 Days';
   if (value === '21-day') return '21 Days';
@@ -33,92 +112,94 @@ const stageDisplay = (stage?: string) => {
   return value.replace(/-/g, ' ');
 };
 
-const stageKeyFromRevision = (revision: Revision): StageKey => {
-  const value = (revision.stage || '').toLowerCase();
-  if (value === '1-day' || value === '7-day' || value === '21-day') return value as '1-day' | '7-day' | '21-day';
-  if (/^\d+-day$/i.test(value)) return 'custom';
-  return 'custom';
-};
-
-const statusFor = (revision: Revision): 'DUE' | 'OVERDUE' | 'UPCOMING' | 'COMPLETED' => {
-  if (revision.completedAt) return 'COMPLETED';
-  const scheduledAt = revision.scheduledAt ? new Date(revision.scheduledAt) : null;
-  if (!scheduledAt) return 'UPCOMING';
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  scheduledAt.setHours(0, 0, 0, 0);
-  if (scheduledAt.getTime() === today.getTime()) return 'DUE';
-  if (scheduledAt.getTime() < today.getTime()) return 'OVERDUE';
-  return 'UPCOMING';
-};
-
 const formatDate = (value?: string | null) => {
   if (!value) return '—';
   return new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 };
 
-const readCustomIntervals = () => {
-  try {
-    const value = localStorage.getItem('leetmvp-custom-revision-intervals');
-    if (!value) return [] as number[];
-    const parsed = JSON.parse(value) as unknown;
-    if (!Array.isArray(parsed)) return [] as number[];
-    const normalized = parsed
-      .filter((item): item is number => typeof item === 'number' && Number.isFinite(item) && item > 0 && item < 10000)
-      .map((item) => Math.floor(item));
-    return [...new Set(normalized)].sort((a, b) => a - b);
-  } catch {
-    return [] as number[];
+type TrackerRow = {
+  problemId: string;
+  title: string;
+  platform: string;
+  difficulty?: string;
+  url?: string;
+  solvedAt: string | null;
+  done: [boolean, boolean, boolean]; // 1-day, 7-day, 21-day
+};
+
+// Every solved problem gets exactly 3 mandatory revisions (1/7/21-day).
+// This groups the raw revision list (which includes completed rows) by
+// problem and marks which of those 3 stages are already done, so the
+// checkmarks are always derived from real data - never manually toggled.
+const buildTrackerRows = (allRows: Revision[]): TrackerRow[] => {
+  const map = new Map<string, TrackerRow>();
+  for (const row of allRows) {
+    const problem = row.problemId;
+    const key = problem?._id;
+    if (!key) continue;
+    let entry = map.get(key);
+    if (!entry) {
+      entry = {
+        problemId: key,
+        title: problem.title || 'Problem',
+        platform: row.platform || 'LeetCode',
+        difficulty: problem.difficulty,
+        url: problem.url,
+        solvedAt: row.solvedAt ?? null,
+        done: [false, false, false],
+      };
+      map.set(key, entry);
+    }
+    if (!entry.solvedAt && row.solvedAt) entry.solvedAt = row.solvedAt;
+    const isDone = Boolean(row.completedAt) || row.status?.toLowerCase() === 'completed';
+    if (!isDone) continue;
+    if (row.stageDays === 1) entry.done[0] = true;
+    else if (row.stageDays === 7) entry.done[1] = true;
+    else if (row.stageDays === 21) entry.done[2] = true;
   }
+  return [...map.values()].sort((a, b) => (toDate(b.solvedAt)?.getTime() ?? 0) - (toDate(a.solvedAt)?.getTime() ?? 0));
 };
 
-const toCustomIntervals = (stages: number[] | undefined) => {
-  const values = (stages ?? DEFAULT_STAGES).filter((value) => !DEFAULT_STAGES.includes(value));
-  return [...new Set(values)].sort((a, b) => a - b);
-};
-
-const resolveCustomValue = (customIntervals: number[], current: number | null) => {
-  if (customIntervals.length === 0) return null;
-  if (current !== null && customIntervals.includes(current)) return current;
-  return customIntervals[0];
-};
-
-const matchCustomStage = (revision: Revision, interval: number) => {
-  const stage = (revision.stage || '').toLowerCase();
-  if (!stage) return false;
-  const match = /^\d+-day$/i.test(stage) ? Number.parseInt(stage, 10) : NaN;
-  return Number.isFinite(match) && match === interval;
+const formatGroupLabel = (date: Date) => {
+  const today = startOfDay(new Date());
+  const tomorrow = addDays(today, 1);
+  const weekStart = startOfWeek(today);
+  const weekEnd = addDays(weekStart, 6);
+  const dueDay = startOfDay(date);
+  if (dateKey(dueDay) === dateKey(today)) return 'Today';
+  if (dateKey(dueDay) === dateKey(tomorrow)) return 'Tomorrow';
+  if (dueDay >= weekStart && dueDay <= weekEnd) return 'This Week';
+  return dueDay.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 };
 
 export default function Revisions() {
   const [rows, setRows] = useState<Revision[]>([]);
+  const [rawRows, setRawRows] = useState<Revision[]>([]);
+  const [showTracker, setShowTracker] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [selectedStage, setSelectedStage] = useState<StageKey>('today');
-  const [customIntervals, setCustomIntervals] = useState<number[]>(() => readCustomIntervals());
-  const [customSelection, setCustomSelection] = useState<number | null>(null);
-  const [customModalOpen, setCustomModalOpen] = useState(false);
-  const [customInput, setCustomInput] = useState('30');
+  const [selectedFilter, setSelectedFilter] = useState<ReviewFilter>('all');
   const [reviewTarget, setReviewTarget] = useState<Revision | null>(null);
+  const [reviewNotice, setReviewNotice] = useState('');
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [problemOptions, setProblemOptions] = useState<any[]>([]);
+  const [pickerSearch, setPickerSearch] = useState('');
+  const [selectedProblems, setSelectedProblems] = useState<Set<string>>(new Set());
   const [addBusy, setAddBusy] = useState(false);
-  const [reviewNotice,setReviewNotice]=useState('');
-  const [pickerOpen,setPickerOpen]=useState(false); const [problemOptions,setProblemOptions]=useState<any[]>([]); const [pickerSearch,setPickerSearch]=useState(''); const [selectedProblems,setSelectedProblems]=useState<Set<string>>(new Set());
   const [, refreshClock] = useState(0);
 
   const load = async () => {
     setLoading(true);
     setError('');
     try {
-      const [response, settings] = await Promise.all([
-        api.revisions(),
-        api.revisionsSettings().catch(() => ({ revisionStages: DEFAULT_STAGES })),
-      ]);
-      const nextRows = asRevisionList(response);
+      const response = await api.revisions();
+      const allRows = asRevisionList(response);
+      setRawRows(allRows);
+      const nextRows = allRows.filter((row) => {
+        if (row.completedAt || row.status?.toLowerCase() === 'completed') return false;
+        return true;
+      });
       setRows(nextRows);
-      const configured = Array.isArray(settings?.revisionStages) ? settings.revisionStages : DEFAULT_STAGES;
-      const custom = toCustomIntervals(configured);
-      setCustomIntervals(custom);
-      setCustomSelection((current) => resolveCustomValue(custom, current));
     } catch (requestError) {
       const message = requestError instanceof Error ? requestError.message : 'Unable to load revisions.';
       setError(message);
@@ -133,120 +214,95 @@ export default function Revisions() {
   }, []);
 
   useEffect(() => {
-    // Re-evaluate date-based sections while the page remains open across midnight.
     const timer = window.setInterval(() => refreshClock(Date.now()), 60_000);
     return () => window.clearInterval(timer);
   }, []);
 
-  useEffect(() => {
-    localStorage.setItem('leetmvp-custom-revision-intervals', JSON.stringify(customIntervals));
-  }, [customIntervals]);
-
-  const activeRows = useMemo(() => rows.filter((row) => !row.completedAt), [rows]);
-  const overdueRows = useMemo(
-    () => activeRows.filter((row) => statusFor(row) === 'OVERDUE'),
-    [activeRows],
-  );
-  const todayRows = useMemo(
-    () => activeRows.filter((row) => statusFor(row) === 'DUE'),
-    [activeRows],
-  );
+  const activeRows = useMemo(() => [...rows].sort(sortByNextReview), [rows]);
+  const trackerRows = useMemo(() => buildTrackerRows(rawRows), [rawRows]);
 
   const counts = useMemo(() => {
-    const dueToday = activeRows.filter((row) => statusFor(row) === 'DUE').length;
-    const overdue = activeRows.filter((row) => statusFor(row) === 'OVERDUE').length;
-    const upcoming = activeRows.filter((row) => statusFor(row) === 'UPCOMING').length;
-    const completed = rows.filter((row) => row.completedAt).length;
-    return { dueToday, overdue, upcoming, completed, todayTotal: dueToday + overdue };
-  }, [activeRows, rows]);
+    const overdue = activeRows.filter((row) => isOverdue(row)).length;
+    const today = activeRows.filter((row) => isToday(row)).length;
+    const thisWeek = activeRows.filter((row) => isThisWeek(row)).length;
+    const all = activeRows.length;
+    return { all, overdue, today, thisWeek };
+  }, [activeRows]);
 
-  const stageCounts = useMemo(() => ({
-    overdue: overdueRows.length,
-    today: todayRows.length,
-    '1-day': activeRows.filter((row) => stageKeyFromRevision(row) === '1-day').length,
-    '7-day': activeRows.filter((row) => stageKeyFromRevision(row) === '7-day').length,
-    '21-day': activeRows.filter((row) => stageKeyFromRevision(row) === '21-day').length,
-    custom: customIntervals.length,
-  }), [activeRows, customIntervals.length, overdueRows.length, todayRows.length]);
+  const filteredRows = useMemo(() => filterRows(activeRows, selectedFilter), [activeRows, selectedFilter]);
 
-  const stageProgress = useMemo(() => {
-    const items = [
-      { key: 'today', label: 'Today', total: todayRows.length, due: todayRows.length },
-      { key: '1-day', label: '1 Day', total: activeRows.filter((row) => stageKeyFromRevision(row) === '1-day').length, due: activeRows.filter((row) => stageKeyFromRevision(row) === '1-day' && (statusFor(row) === 'DUE' || statusFor(row) === 'OVERDUE')).length },
-      { key: '7-day', label: '7 Days', total: activeRows.filter((row) => stageKeyFromRevision(row) === '7-day').length, due: activeRows.filter((row) => stageKeyFromRevision(row) === '7-day' && (statusFor(row) === 'DUE' || statusFor(row) === 'OVERDUE')).length },
-      { key: '21-day', label: '21 Days', total: activeRows.filter((row) => stageKeyFromRevision(row) === '21-day').length, due: activeRows.filter((row) => stageKeyFromRevision(row) === '21-day' && (statusFor(row) === 'DUE' || statusFor(row) === 'OVERDUE')).length },
-    ];
-    return items.map((item) => ({ ...item, pct: item.total > 0 ? Math.min(100, Math.round((item.due / item.total) * 100)) : 0 }));
-  }, [activeRows, todayRows]);
-
-  const customVisibleValue = resolveCustomValue(customIntervals, customSelection);
-
-  useEffect(() => {
-    if (customSelection !== null && customIntervals.includes(customSelection)) return;
-    setCustomSelection(customIntervals[0] ?? null);
-  }, [customIntervals, customSelection]);
-
-  const visibleRows = useMemo(() => {
-    if (selectedStage === 'overdue') return overdueRows;
-    if (selectedStage === 'today') return todayRows;
-    if (selectedStage === 'custom') {
-      if (customVisibleValue === null) return [];
-      return activeRows.filter((row) => matchCustomStage(row, customVisibleValue));
+  const groupedRows = useMemo<DateGroup[]>(() => {
+    const groups = new Map<string, DateGroup>();
+    for (const row of filteredRows) {
+      const dueAt = toDate(dueDateFor(row));
+      if (!dueAt) continue;
+      const date = startOfDay(dueAt);
+      const today = startOfDay(new Date());
+      const tomorrow = addDays(today, 1);
+      const weekStart = startOfWeek(today);
+      const weekEnd = addDays(weekStart, 6);
+      const inCurrentWeek = date >= weekStart && date <= weekEnd;
+      const key = dateKey(date);
+      // Today and Tomorrow each get their own heading; the rest of the
+      // current week folds into a single "This Week" heading below them.
+      const bucketKey = key === dateKey(today)
+        ? key
+        : key === dateKey(tomorrow)
+          ? key
+          : inCurrentWeek
+            ? 'this-week'
+            : key;
+      const existing = groups.get(bucketKey);
+      if (existing) {
+        existing.items.push(row);
+      } else {
+        groups.set(bucketKey, {
+          key: bucketKey,
+          label: formatGroupLabel(date),
+          date,
+          items: [row],
+        });
+      }
     }
-    return activeRows.filter((row) => stageKeyFromRevision(row) === selectedStage);
-  }, [selectedStage, overdueRows, todayRows, activeRows, customVisibleValue]);
+    return [...groups.values()].sort((a, b) => a.date.getTime() - b.date.getTime());
+  }, [filteredRows]);
 
-  const groupedRows = useMemo(() => {
-    const groups: Record<SectionKey, Revision[]> = { OVERDUE: [], DUE: [], UPCOMING: [] };
-    for (const row of [...visibleRows].sort((a, b) => new Date(a.scheduledAt || 0).getTime() - new Date(b.scheduledAt || 0).getTime())) {
-      const status = statusFor(row);
-      if (status === 'OVERDUE') groups.OVERDUE.push(row);
-      else if (status === 'DUE') groups.DUE.push(row);
-      else if (status === 'UPCOMING') groups.UPCOMING.push(row);
+  const solutionsUrlFor = (revision: Revision) => {
+    const problemUrl = revision.problemId?.url;
+    if (!problemUrl) return null;
+    const platform = revision.platform || 'LeetCode';
+    try {
+      if (platform === 'LeetCode') {
+        const parsed = new URL(problemUrl);
+        const path = parsed.pathname.endsWith('/') ? parsed.pathname : `${parsed.pathname}/`;
+        parsed.pathname = `${path}solutions/`;
+        return parsed.toString();
+      }
+      // GeeksforGeeks practice pages are client-rendered and don't expose a
+      // fixed "/solutions/" URL - the editorial/discussion is a tab on the
+      // problem's own page, so just open that page.
+      if (platform === 'GeeksforGeeks') return problemUrl;
+      return null;
+    } catch {
+      return null;
     }
-    return groups;
-  }, [visibleRows]);
-
-  const addCustomInterval = async () => {
-    const parsed = Number(customInput);
-    if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 3650) {
-      setError('Custom revision intervals must be a positive number under 3650 days.');
-      return;
-    }
-    const rounded = Math.floor(parsed);
-    if (customIntervals.includes(rounded)) {
-      setError('This custom revision interval already exists.');
-      return;
-    }
-    const next = [...new Set([...customIntervals, rounded])].sort((a, b) => a - b);
-    setCustomIntervals(next);
-    setCustomSelection(rounded);
-    setSelectedStage('custom');
-    setCustomModalOpen(false);
-    setCustomInput('30');
-    setError('');
-    await api.updateRevisionSettings([...DEFAULT_STAGES, ...next]);
-  };
-
-  const removeCustomInterval = async (interval: number) => {
-    const activeCustom = activeRows.some((row) => matchCustomStage(row, interval));
-    if (activeCustom) {
-      setError('This custom interval still has active revisions.');
-      return;
-    }
-    const next = customIntervals.filter((value) => value !== interval);
-    setCustomIntervals(next);
-    setCustomSelection(next[0] ?? null);
-    if (next.length === 0) setSelectedStage('today');
-    else setSelectedStage('custom');
-    await api.updateRevisionSettings([...DEFAULT_STAGES, ...next]);
   };
 
   const submitReview = async (result: ReviewChoice) => {
     if (!reviewTarget) return;
     try {
+      if (result === 'Needed Hint') {
+        const solutionsUrl = solutionsUrlFor(reviewTarget);
+        if (solutionsUrl) window.open(solutionsUrl, '_blank', 'noopener,noreferrer');
+      }
       await api.completeRevision(reviewTarget._id, result);
-      setReviewNotice(result === 'Solved' ? 'Question review completed.' : 'Question is now in Overdue.');
+      setReviewNotice(
+        result === 'Solved'
+          ? 'Question review completed.'
+          : result === 'Not Solved'
+            ? 'Question is now in Overdue.'
+            : 'Hint noted. This stays on your list for today.',
+      );
       setReviewTarget(null);
       await load();
     } catch (requestError) {
@@ -266,8 +322,41 @@ export default function Revisions() {
       console.error('[Revision UI] Delete failed:', requestError);
     }
   };
-  const addQuestion = async () => { if(!problemOptions.length){const response=await api.problems();setProblemOptions(response.items);}setSelectedProblems(new Set());setPickerSearch('');setPickerOpen(true); };
-  const addSelected=async()=>{const days=selectedStage==='today'?0:selectedStage==='1-day'?1:selectedStage==='7-day'?7:selectedStage==='21-day'?21:customVisibleValue;if(days===null||days===undefined||selectedProblems.size===0)return;setAddBusy(true);try{for(const id of selectedProblems)await api.addRevision(id,days);setPickerOpen(false);await load();}catch(e){setError(e instanceof Error?e.message:'Unable to add revisions.');}finally{setAddBusy(false);}};
+
+  const addQuestion = async () => {
+    if (!problemOptions.length) {
+      const response = await api.problems();
+      setProblemOptions(response.items);
+    }
+    setSelectedProblems(new Set());
+    setPickerSearch('');
+    setPickerOpen(true);
+  };
+
+  const addSelected = async () => {
+    if (selectedProblems.size === 0) return;
+    // Land the new revision inside whichever section is currently open,
+    // instead of always scheduling it 7 days out.
+    const today = startOfDay(new Date());
+    const days = selectedFilter === 'today' || selectedFilter === 'overdue'
+      ? 0
+      : selectedFilter === 'this-week'
+        ? Math.max(0, Math.round((addDays(startOfWeek(today), 6).getTime() - today.getTime()) / 86400000))
+        : 7;
+    setAddBusy(true);
+    try {
+      for (const id of selectedProblems) {
+        await api.addRevision(id, days);
+      }
+      setPickerOpen(false);
+      await load();
+    } catch (requestError) {
+      const message = requestError instanceof Error ? requestError.message : 'Unable to add revisions.';
+      setError(message);
+    } finally {
+      setAddBusy(false);
+    }
+  };
 
   return (
     <main className="shell page-shell revision-page">
@@ -278,117 +367,177 @@ export default function Revisions() {
       </div>
 
       <section className="revision-summary">
-        <div className="revision-metric"><span>Due today</span><strong>{counts.dueToday}</strong></div>
         <div className="revision-metric"><span>Overdue</span><strong>{counts.overdue}</strong></div>
-        <div className="revision-metric"><span>Upcoming</span><strong>{counts.upcoming}</strong></div>
-        <div className="revision-metric"><span>Today</span><strong>{counts.todayTotal}</strong></div>
+        <div className="revision-metric"><span>Today</span><strong>{counts.today}</strong></div>
+        <div className="revision-metric"><span>This Week</span><strong>{counts.thisWeek}</strong></div>
+        <div className="revision-metric"><span>All</span><strong>{counts.all}</strong></div>
       </section>
-
-      <div className="revision-progress-block">
-        {stageProgress.map((item) => (
-          <div className="revision-progress-item" key={item.key}>
-            <div className="progress-label-row">
-              <span>{item.label}</span>
-              <strong>{item.due} / {item.total}</strong>
-            </div>
-            <div className="progress-bar"><i style={{ width: `${item.pct}%` }} /></div>
-          </div>
-        ))}
-      </div>
 
       <section className="panel revision-panel">
         {reviewNotice && <p className="state">{reviewNotice}</p>}
-        <div className="group-label-row"><strong>{selectedStage==='overdue'?'Overdue':selectedStage==='today'?'Today':selectedStage==='custom'&&customVisibleValue?`${customVisibleValue} Days`:stageDisplay(selectedStage)}</strong>{selectedStage !== 'overdue' && <button type="button" className="outline-button small" disabled={addBusy} onClick={()=>void addQuestion()}>+ Add Question</button>}</div>
-        <div className="revision-tabs" role="tablist" aria-label="Revision stages">
-          {[{ key: 'overdue', label: 'Overdue' }, ...DEFAULT_STAGE_TABS, { key: 'custom', label: 'Custom' }].map((tab) => (
-            <button
-              key={tab.key}
-              type="button"
-              className={`tab-button ${selectedStage === tab.key ? 'active' : ''}`}
-              onClick={() => {
-                if (tab.key === 'custom') {
-                  setSelectedStage('custom');
-                  if (customIntervals.length > 0 && customSelection === null) setCustomSelection(customIntervals[0]);
-                  return;
-                }
-                setSelectedStage(tab.key as StageKey);
-              }}
-            >
-              {tab.label}
-              <span className="tab-count">{tab.key === 'custom' ? customIntervals.length : stageCounts[tab.key as keyof typeof stageCounts] ?? 0}</span>
-            </button>
-          ))}
+
+        <div className="group-label-row">
+          <strong>{showTracker ? 'Solved' : FILTERS.find((filter) => filter.key === selectedFilter)?.label ?? 'All'}</strong>
+          <button type="button" className="outline-button small" disabled={addBusy} onClick={() => void addQuestion()}>+ Add Question</button>
         </div>
 
-        {loading ? (
+        <div className="revision-tabs" role="tablist" aria-label="Revision filters">
+          {FILTERS.map((filter) => (
+            <button
+              key={filter.key}
+              type="button"
+              className={`tab-button ${!showTracker && selectedFilter === filter.key ? 'active' : ''}`}
+              onClick={() => {
+                setShowTracker(false);
+                setSelectedFilter(filter.key);
+              }}
+            >
+              {filter.label}
+              <span className="tab-count">{filter.key === 'all' ? counts.all : filterRows(activeRows, filter.key).length}</span>
+            </button>
+          ))}
+          <button
+            type="button"
+            className={`tab-button ${showTracker ? 'active' : ''}`}
+            onClick={() => setShowTracker(true)}
+          >
+            Solved
+            <span className="tab-count">{trackerRows.length}</span>
+          </button>
+        </div>
+
+        {showTracker ? (
+          trackerRows.length === 0 ? (
+            <div className="empty-state-box">
+              <h3>No solved problems yet</h3>
+              <p>Solve a problem to start tracking its 3 revisions here.</p>
+            </div>
+          ) : (
+            <div className="revision-row-list">
+              {trackerRows.map((row) => (
+                <div className="revision-row tracker-row" key={row.problemId}>
+                  <div className="problem-name-wrap">
+                    <span className="problem-name">{row.title}</span>
+                    <span className="meta-row">
+                      <span>{row.platform}</span>
+                      <span>·</span>
+                      <span>{row.difficulty || 'Easy'}</span>
+                      <span>·</span>
+                      <span>Solved: {formatDate(row.solvedAt)}</span>
+                    </span>
+                  </div>
+                  <div className="tracker-checkboxes">
+                    {(['1st', '2nd', '3rd'] as const).map((label, index) => (
+                      <label className="tracker-checkbox" key={label}>
+                        <input type="checkbox" checked={row.done[index]} disabled readOnly />
+                        <span>{label} Revision</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )
+        ) : loading ? (
           <div className="state">Loading revisions...</div>
         ) : error ? (
           <div className="state error">{error}<button className="outline-button small" onClick={() => void load()}>Retry</button></div>
-        ) : selectedStage === 'custom' ? (
-          <div className="custom-stage-wrapper">
-            {customIntervals.length === 0 ? (
-              <div className="empty-state-box">
-                <h3>No custom revision intervals yet.</h3>
-                <p>Create intervals for longer retention cycles.</p>
-                <button className="primary-button" onClick={() => setCustomModalOpen(true)}>+ Add interval</button>
-              </div>
-            ) : (
-              <>
-                <div className="custom-header-row">
-                  {customIntervals.map((interval) => (
-                    <button key={interval} type="button" className={`custom-chip ${customVisibleValue === interval ? 'active' : ''}`} onClick={() => { setCustomSelection(interval); setSelectedStage('custom'); }}>
-                      {interval} Days
-                    </button>
-                  ))}
-                  <button className="outline-button small" onClick={() => setCustomModalOpen(true)}>+ Add</button>
-                </div>
-                <div className="custom-list-toolbar">
-                  <span>{customVisibleValue ?? 0} day queue</span>
-                  {customVisibleValue !== null && (
-                    <button className="text-button" onClick={() => void removeCustomInterval(customVisibleValue)}>Remove</button>
-                  )}
-                </div>
-                {visibleRows.length === 0 ? (
-                  <div className="empty-state-box compact"><h3>No upcoming revisions in this stage.</h3></div>
-                ) : (
-                  <RevisionGroups rows={groupedRows} onReview={(item) => setReviewTarget(item)} onDelete={deleteRevision} />
-                )}
-              </>
-            )}
+        ) : groupedRows.length === 0 ? (
+          <div className="empty-state-box">
+            <h3>✓ You're all caught up</h3>
+            <p>There are no active revisions in this view.</p>
           </div>
         ) : (
-          <div className="stage-content">
-            {visibleRows.length === 0 ? (
-              <div className="empty-state-box">
-                <h3>✓ You're all caught up</h3>
-                <p>There are no active revisions in this stage.</p>
+          <div className="revision-group-stack">
+            {groupedRows.map((group) => (
+              <div className="revision-group" key={group.key}>
+                <div className="group-label-row">
+                  <span>{group.label}</span>
+                  <strong>{group.items.length}</strong>
+                </div>
+                <div className="revision-row-list">
+                  {group.items.map((item) => {
+                    const dueAt = dueDateFor(item);
+                    const status = isOverdue(item) ? 'OVERDUE' : isToday(item) ? 'DUE' : 'UPCOMING';
+                    const overdueDays = status === 'OVERDUE' && dueAt ? Math.max(0, Math.ceil((Date.now() - new Date(dueAt).getTime()) / 86400000)) : 0;
+                    return (
+                      <div className="revision-row" key={item._id}>
+                        <div className="revision-row-main">
+                          <div className="problem-name-wrap">
+                            <span className="problem-name">{item.problemId?.title || 'Problem'}</span>
+                            <span className="meta-row">
+                              <span>{item.platform || 'LeetCode'}</span>
+                              <span>·</span>
+                              <span>{item.problemId?.difficulty || 'Easy'}</span>
+                              <span>·</span>
+                              <span>Solved: {formatDate(item.solvedAt || undefined)}</span>
+                              <span>·</span>
+                              <span>Revision: {stageDisplay(item.stage)}</span>
+                              <span>·</span>
+                              <span>Due: {formatDate(dueAt)}</span>
+                            </span>
+                          </div>
+                          <div className="meta-stack">
+                            <span className={`mini-badge ${status.toLowerCase()}`}>
+                              {status === 'DUE' ? 'Due' : status === 'OVERDUE' ? `Overdue · ${overdueDays}d` : 'Upcoming'}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="revision-row-actions">
+                          <a href={item.problemId?.url || '#'} target="_blank" rel="noreferrer" aria-label={`Open ${item.problemId?.title || 'problem'}`}>↗</a>
+                          {(status === 'DUE' || status === 'OVERDUE') && (
+                            <button type="button" onClick={() => setReviewTarget(item)}>Review</button>
+                          )}
+                          <button type="button" className="outline-button small" onClick={() => void deleteRevision(item._id)}>🗑</button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
-            ) : (
-              <RevisionGroups rows={groupedRows} onReview={(item) => setReviewTarget(item)} onDelete={deleteRevision} />
-            )}
+            ))}
           </div>
         )}
       </section>
 
-      {customModalOpen && (
-        <div className="modal-backdrop" onClick={() => setCustomModalOpen(false)}>
+      {pickerOpen && (
+        <div className="modal-backdrop" onClick={() => setPickerOpen(false)}>
           <div className="modal-card" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
-              <h3>Add revision interval</h3>
-              <button type="button" className="text-button" onClick={() => setCustomModalOpen(false)}>Close</button>
+              <h3>Select Problems</h3>
+              <button type="button" className="text-button" onClick={() => setPickerOpen(false)}>Close</button>
             </div>
-            <label className="modal-field">
-              <span>Days</span>
-              <input type="number" min="1" max="3650" value={customInput} onChange={(event) => setCustomInput(event.target.value)} />
-            </label>
+            <input placeholder="Search problem name or number..." value={pickerSearch} onChange={(event) => setPickerSearch(event.target.value)} />
+            <div style={{ maxHeight: 360, overflowY: 'auto' }}>
+              {problemOptions
+                .filter((problemEntry) => {
+                  const query = pickerSearch.toLowerCase();
+                  const title = problemEntry.problemId.title.toLowerCase();
+                  const id = String(problemEntry.problemId.leetcodeId || problemEntry.problemId.externalId || '');
+                  return title.includes(query) || id.includes(query);
+                })
+                .map((problemEntry) => (
+                  <div className="revision-row" key={problemEntry.problemId._id}>
+                    <span>{problemEntry.problemId.title} · {problemEntry.platform || 'LeetCode'} · {problemEntry.problemId.difficulty}</span>
+                    <button type="button" onClick={() => setSelectedProblems((current) => {
+                      const next = new Set(current);
+                      if (next.has(problemEntry.problemId._id)) next.delete(problemEntry.problemId._id);
+                      else next.add(problemEntry.problemId._id);
+                      return next;
+                    })}>
+                      {selectedProblems.has(problemEntry.problemId._id) ? 'Added ✓' : 'Add'}
+                    </button>
+                  </div>
+                ))}
+            </div>
             <div className="modal-actions">
-              <button type="button" className="outline-button" onClick={() => setCustomModalOpen(false)}>Cancel</button>
-              <button type="button" className="primary-button" onClick={() => void addCustomInterval()}>Add</button>
+              <span>Selected: {selectedProblems.size}</span>
+              <button type="button" className="outline-button" onClick={() => setPickerOpen(false)}>Cancel</button>
+              <button type="button" className="primary-button" disabled={!selectedProblems.size || addBusy} onClick={() => void addSelected()}>Add Selected</button>
             </div>
           </div>
         </div>
       )}
-      {pickerOpen && <div className="modal-backdrop" onClick={()=>setPickerOpen(false)}><div className="modal-card" onClick={e=>e.stopPropagation()}><div className="modal-header"><h3>Select Problems</h3><button className="text-button" onClick={()=>setPickerOpen(false)}>Close</button></div><input placeholder="Search problem name or number..." value={pickerSearch} onChange={e=>setPickerSearch(e.target.value)}/><div style={{maxHeight:360,overflowY:'auto'}}>{problemOptions.filter(p=>{const q=pickerSearch.toLowerCase();return p.problemId.title.toLowerCase().includes(q)||String(p.problemId.leetcodeId||p.problemId.externalId||'').includes(q)}).map(p=><div className="revision-row" key={p.problemId._id}><span>{p.problemId.title} · {p.platform||'LeetCode'} · {p.problemId.difficulty}</span><button onClick={()=>setSelectedProblems(s=>{const n=new Set(s);n.has(p.problemId._id)?n.delete(p.problemId._id):n.add(p.problemId._id);return n})}>{selectedProblems.has(p.problemId._id)?'Added ✓':'Add'}</button></div>)}</div><div className="modal-actions"><span>Selected: {selectedProblems.size}</span><button className="outline-button" onClick={()=>setPickerOpen(false)}>Cancel</button><button className="primary-button" disabled={!selectedProblems.size||addBusy} onClick={()=>void addSelected()}>Add Selected</button></div></div></div>}
 
       {reviewTarget && (
         <div className="modal-backdrop" onClick={() => setReviewTarget(null)}>
@@ -418,59 +567,3 @@ export default function Revisions() {
   );
 }
 
-function RevisionGroups({ rows, onReview, onDelete }: { rows: Record<SectionKey, Revision[]>; onReview: (item: Revision) => void; onDelete: (id: string) => Promise<void> }) {
-  const sections: { key: SectionKey; label: string }[] = [
-    { key: 'OVERDUE', label: 'Overdue' },
-    { key: 'DUE', label: 'Due today' },
-    { key: 'UPCOMING', label: 'Upcoming' },
-  ];
-
-  return (
-    <div className="revision-group-stack">
-      {sections.filter((section) => rows[section.key].length > 0).map((section) => (
-        <div className="revision-group" key={section.key}>
-          <div className="group-label-row">
-            <span>{section.label}</span>
-            <strong>{rows[section.key].length}</strong>
-          </div>
-          <div className="revision-row-list">
-            {rows[section.key].map((item) => {
-              const status = statusFor(item);
-              const overdueDays = status === 'OVERDUE' && item.scheduledAt ? Math.max(0, Math.ceil((Date.now() - new Date(item.scheduledAt).getTime()) / 86400000)) : 0;
-              return (
-                <div className="revision-row" key={item._id}>
-                  <div className="revision-row-main">
-                    <div className="problem-name-wrap">
-                      <span className="problem-name">{item.problemId?.title || 'Problem'}</span>
-                      <span className="meta-row">
-                        <span>{item.platform || 'LeetCode'}</span>
-                        <span>·</span>
-                        <span>{item.problemId?.difficulty || 'Easy'}</span>
-                        <span>·</span>
-                        <span>Solved: {formatDate(item.solvedAt || undefined)}</span>
-                        <span>·</span>
-                        <span>Revision: {stageDisplay(item.stage)}</span>
-                        <span>·</span>
-                        <span>Due: {formatDate(item.scheduledAt)}</span>
-                      </span>
-                    </div>
-                    <div className="meta-stack">
-                      <span className={`mini-badge ${status.toLowerCase()}`}>
-                        {status === 'DUE' ? 'Due' : status === 'OVERDUE' ? `Overdue · ${overdueDays}d` : 'Upcoming'}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="revision-row-actions">
-                    <a href={item.problemId?.url || '#'} target="_blank" rel="noreferrer" aria-label={`Open ${item.problemId?.title || 'problem'}`}>↗</a>
-                    <button type="button" onClick={() => onReview(item)}>Review</button>
-                    <button type="button" className="outline-button small" onClick={() => void onDelete(item._id)}>🗑</button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}

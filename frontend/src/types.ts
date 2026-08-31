@@ -9,7 +9,9 @@ export interface Revision {
   problemId?: Problem | null;
   platform?: string;
   stage?: string;
+  stageDays?: number;
   scheduledAt?: string;
+  nextReviewAt?: string | null;
   solvedAt?: string | null;
   completedAt?: string | null;
   result?: 'Solved' | 'Needed Hint' | 'Not Solved';
