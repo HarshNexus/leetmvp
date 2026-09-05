@@ -4,10 +4,22 @@ const API = 'https://leetmvp.onrender.com/api';
 const WEB_APP = 'https://leetmvp-1.onrender.com';
 type User = { id: string; email: string };
 
+async function openOrFocusTab(url: string) {
+  const [existing] = await chrome.tabs.query({ url: `${WEB_APP}/*` });
+  if (existing?.id !== undefined) {
+    await chrome.tabs.update(existing.id, { active: true, url });
+    if (existing.windowId !== undefined) await chrome.windows.update(existing.windowId, { focused: true });
+  } else {
+    await chrome.tabs.create({ url });
+  }
+}
+function openOnce(button: HTMLElement | null, url: string) {
+  button?.addEventListener('click', () => { if (button.hasAttribute('disabled')) return; button.setAttribute('disabled', 'true'); openOrFocusTab(url).finally(() => button.removeAttribute('disabled')); });
+}
 function render(user: User | null, status = '') {
   app.innerHTML = user ? `<div class="status">Connected ✓</div><p class="muted">${user.email}</p><p class="muted">Accepted submissions sync automatically.</p><button id="dashboard">Open Dashboard</button><button class="secondary" id="logout">Disconnect</button>` : `<h3>Connect LeetCode Account</h3><p class="muted">Sign in through the LeetMVP web app to enable automatic syncing.</p><button id="connect">Connect LeetCode</button><button class="secondary" id="open">Open Dashboard</button>${status ? `<p class="error">${status}</p>` : ''}`;
-  document.getElementById('dashboard')?.addEventListener('click', () => chrome.tabs.create({ url: `${WEB_APP}/dashboard` }));
-  document.getElementById('open')?.addEventListener('click', () => chrome.tabs.create({ url: `${WEB_APP}/login` }));
+  openOnce(document.getElementById('dashboard'), `${WEB_APP}/dashboard`);
+  openOnce(document.getElementById('open'), `${WEB_APP}/login`);
   document.getElementById('connect')?.addEventListener('click', connect);
   document.getElementById('logout')?.addEventListener('click', disconnect);
 }

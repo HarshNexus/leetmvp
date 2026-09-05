@@ -1,18 +1,25 @@
 import type { AuthResponse, DashboardAnalytics, Revision, SolvedProblem, User } from '../types';
 const base = import.meta.env.VITE_API_URL;
+const inflightGets = new Map<string, Promise<unknown>>();
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const token = localStorage.getItem('dsa_token');
-  const response = await fetch(`${base}${path}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(options.headers || {}),
-    },
-  });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body?.error?.message || 'Request failed');
-  return body?.data as T;
+  const isGet = !options.method || options.method.toUpperCase() === 'GET';
+  if (isGet && inflightGets.has(path)) return inflightGets.get(path) as Promise<T>;
+  const run = (async () => {
+    const token = localStorage.getItem('dsa_token');
+    const response = await fetch(`${base}${path}`, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(options.headers || {}),
+      },
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body?.error?.message || 'Request failed');
+    return body?.data as T;
+  })();
+  if (isGet) { inflightGets.set(path, run); run.finally(() => inflightGets.delete(path)); }
+  return run;
 }
 export const api = {
   login: (email: string, password: string) => request<AuthResponse>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),

@@ -5,6 +5,7 @@ import express from 'express';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
 import { connectDatabase, databaseStatus } from './config/database';
+import { cleanupOrphanedRecords } from './services/cleanup';
 import authRoutes from './routes/auth';
 import problemRoutes from './routes/problems';
 import extensionAuthRoutes from './routes/extensionAuth';
@@ -20,9 +21,10 @@ app.use(cors({ origin: (origin, callback) => {
 app.use(express.json());
 app.use('/api/auth', rateLimit({ windowMs: 15 * 60 * 1000, limit: 100 }), authRoutes);
 app.use('/api/auth/extension', rateLimit({ windowMs: 15 * 60 * 1000, limit: 100 }), extensionAuthRoutes);
-app.use('/api/problems', problemRoutes);
-app.use('/api/dashboard', dashboardRoutes);
-app.use('/api/revisions', revisionRoutes);
+const dataLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 300 });
+app.use('/api/problems', dataLimiter, problemRoutes);
+app.use('/api/dashboard', dataLimiter, dashboardRoutes);
+app.use('/api/revisions', dataLimiter, revisionRoutes);
 app.get('/api/health', (_req, res) => { const database = databaseStatus(); res.status(database === 'connected' ? 200 : 503).json({ success: database === 'connected', database }); });
 app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   if (error instanceof Error && error.name === 'ZodError') return res.status(400).json({ success:false,error:{code:'VALIDATION_ERROR',message:'Invalid request'} });
@@ -30,5 +32,11 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
   console.error(error); res.status(500).json({ success:false,error:{code:'INTERNAL_ERROR',message:'Internal server error'} });
 });
 
+process.on('unhandledRejection', (reason) => console.error('Unhandled rejection:', reason));
+process.on('uncaughtException', (error) => console.error('Uncaught exception:', error));
 const port = Number(process.env.PORT ?? 5000);
-connectDatabase().then(() => app.listen(port, () => console.log(`DSA Tracker API listening on ${port}`))).catch((error: Error) => { console.error(`Unable to start: MongoDB connection failed. ${error.message}`); process.exit(1); });
+connectDatabase().then(async () => {
+  await cleanupOrphanedRecords().catch(error => console.error('Orphan cleanup failed:', error));
+  setInterval(() => { cleanupOrphanedRecords().catch(error => console.error('Orphan cleanup failed:', error)); }, 6 * 60 * 60 * 1000);
+  app.listen(port, () => console.log(`DSA Tracker API listening on ${port}`));
+}).catch((error: Error) => { console.error(`Unable to start: MongoDB connection failed. ${error.message}`); process.exit(1); });

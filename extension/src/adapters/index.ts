@@ -1,1 +1,1 @@
-import { gfgAdapter } from './gfg'; export const adapters=[gfgAdapter]; export { gfgAdapter };
+import { gfgAdapter, observeGfgAccepted } from './gfg'; export const adapters=[gfgAdapter]; export { gfgAdapter, observeGfgAccepted };
