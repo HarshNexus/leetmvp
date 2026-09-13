@@ -1,67 +1,224 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useState, type FormEvent } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
-import type { AnalyticsBucket, DashboardAnalytics, Difficulty, SolvedProblem } from '../types';
+import { useMagnetic } from '../hooks/useMagnetic';
+import RecentProblems from '../components/RecentProblems';
+import type { AnalyticsBucket, DashboardAnalytics } from '../types';
 
-type DeletionToast = { id: string; item: SolvedProblem; record: Record<string, unknown> | null; message: string; restoring: boolean; error: boolean };
-const platformLabel = (platform?: string) => platform === 'leetcode' || !platform ? 'LeetCode' : platform;
-const languageLabel = (language?: string) => language?.trim() || 'Unknown';
 const localTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 const readableDate = (date: string) => new Date(`${date}T00:00:00Z`).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' });
+const bucketCount = (buckets: AnalyticsBucket[], name: string) => buckets.find(bucket => bucket.name.toLowerCase() === name)?.count ?? 0;
 
 export default function Dashboard() {
-  const { user, signOut } = useAuth(); const nav = useNavigate();
-  const [items, setItems] = useState<SolvedProblem[]>([]); const [analytics, setAnalytics] = useState<DashboardAnalytics | null>(null); const [loading, setLoading] = useState(true); const [error, setError] = useState(''); const [analyticsError, setAnalyticsError] = useState('');
-  const [search, setSearch] = useState(''); const [platform, setPlatform] = useState('All'); const [language, setLanguage] = useState('All'); const [difficulty, setDifficulty] = useState('All'); const [sort, setSort] = useState('newest'); const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set()); const [toasts, setToasts] = useState<DeletionToast[]>([]); const timers = useRef(new Map<string, number>());
-  const [trendRange, setTrendRange] = useState('30d'); const [selectedActivity, setSelectedActivity] = useState(''); const [goals, setGoals] = useState({ daily: 1, weekly: 5, monthly: 20 }); const [goalMessage, setGoalMessage] = useState('');
-  const [revisionSummary, setRevisionSummary] = useState({ dueToday: 0, overdue: 0, upcoming: 0 });
+  const { user } = useAuth();
+  const [analytics, setAnalytics] = useState<DashboardAnalytics | null>(null);
+  const [analyticsError, setAnalyticsError] = useState('');
+  const [trendRange, setTrendRange] = useState('30d');
+  const [selectedActivity, setSelectedActivity] = useState('');
+  const [goals, setGoals] = useState({ daily: 1, weekly: 5, monthly: 20 });
+  const [goalMessage, setGoalMessage] = useState('');
+  const [revisionsDue, setRevisionsDue] = useState({ dueToday: 0, overdue: 0 });
 
-  const load = () => { setLoading(true); api.problems().then(response => setItems(response.items)).catch(e => setError(e.message)).finally(() => setLoading(false)); };
   const loadAnalytics = () => { setAnalyticsError(''); api.analytics(localTimezone).then(response => { setAnalytics(response); setGoals(response.goals); }).catch(e => setAnalyticsError(e.message || 'Unable to load analytics.')); };
-  const loadRevisions = () => {
+  const loadRevisionsDue = () => {
     api.revisions().then(response => {
-      const rows = (Array.isArray(response) ? response : (Array.isArray((response as { revisions?: unknown[] })?.revisions) ? (response as { revisions: unknown[] }).revisions : [])) as Array<{ completedAt?: string | null; scheduledAt?: string }>;
-      const active = rows.filter((row) => !row.completedAt);
-      const dueToday = active.filter((row) => {
-        if (!row.scheduledAt) return false;
-        const due = new Date(row.scheduledAt); const today = new Date();
-        due.setHours(0, 0, 0, 0); today.setHours(0, 0, 0, 0);
-        return due.getTime() === today.getTime();
-      }).length;
-      const overdue = active.filter((row) => {
-        if (!row.scheduledAt) return false;
-        const due = new Date(row.scheduledAt); const today = new Date();
-        due.setHours(0, 0, 0, 0); today.setHours(0, 0, 0, 0);
-        return due.getTime() < today.getTime();
-      }).length;
-      const upcoming = active.filter((row) => {
-        if (!row.scheduledAt) return true;
-        const due = new Date(row.scheduledAt); const today = new Date();
-        due.setHours(0, 0, 0, 0); today.setHours(0, 0, 0, 0);
-        return due.getTime() > today.getTime();
-      }).length;
-      setRevisionSummary({ dueToday, overdue, upcoming });
+      const rows = (Array.isArray(response) ? response : (Array.isArray((response as { revisions?: unknown[] })?.revisions) ? (response as { revisions: unknown[] }).revisions : [])) as Array<{ completedAt?: string | null; scheduledAt?: string; nextReviewAt?: string | null }>;
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      let dueToday = 0, overdue = 0;
+      for (const row of rows) {
+        if (row.completedAt) continue;
+        const dueAtRaw = row.nextReviewAt || row.scheduledAt;
+        if (!dueAtRaw) continue;
+        const due = new Date(dueAtRaw); due.setHours(0, 0, 0, 0);
+        if (due.getTime() === today.getTime()) dueToday += 1;
+        else if (due.getTime() < today.getTime()) overdue += 1;
+      }
+      setRevisionsDue({ dueToday, overdue });
     }).catch(() => undefined);
   };
-  useEffect(load, []); useEffect(loadAnalytics, []); useEffect(loadRevisions, []); useEffect(() => () => { timers.current.forEach(timer => window.clearTimeout(timer)); }, []); useEffect(() => { const heading = document.querySelector('.shell > header h1'); const name = user?.name?.trim(); if (heading) heading.textContent = name ? `Welcome back, ${name} 👋` : 'Welcome back 👋'; }, [user]);
-  const languages = useMemo(() => Array.from(new Set(items.map(item => languageLabel(item.language)))).sort(), [items]);
-  const shown = useMemo(() => items.filter(item => platform === 'All' || platformLabel(item.platform) === platform).filter(item => language === 'All' || languageLabel(item.language) === language).filter(item => difficulty === 'All' || item.problemId.difficulty === difficulty).filter(item => item.problemId.title.toLowerCase().includes(search.toLowerCase()) || String(item.problemId.leetcodeId).includes(search)).sort((a, b) => sort === 'oldest' ? +new Date(a.solvedAt) - +new Date(b.solvedAt) : sort === 'numberAsc' ? a.problemId.leetcodeId - b.problemId.leetcodeId : sort === 'numberDesc' ? b.problemId.leetcodeId - a.problemId.leetcodeId : +new Date(b.solvedAt) - +new Date(a.solvedAt)), [items, platform, language, difficulty, search, sort]);
-  const count = (value: Difficulty) => items.filter(item => item.problemId.difficulty === value).length;
-  function removeToast(id: string) { const timer = timers.current.get(id); if (timer) window.clearTimeout(timer); timers.current.delete(id); setToasts(current => current.filter(toast => toast.id !== id)); }
-  function addToast(toast: DeletionToast) { setToasts(current => [...current.filter(item => item.id !== toast.id), toast]); timers.current.set(toast.id, window.setTimeout(() => removeToast(toast.id), 3000)); }
-  async function deleteProblem(item: SolvedProblem) { if (deletingIds.has(item._id)) return; setDeletingIds(current => new Set(current).add(item._id)); try { const response = await api.deleteProblem(item._id); setItems(current => current.filter(currentItem => currentItem._id !== item._id)); addToast({ id: item._id, item, record: response.record, message: 'Problem deleted', restoring: false, error: false }); void loadAnalytics(); } catch (requestError) { addToast({ id: `error-${item._id}-${Date.now()}`, item, record: null, message: "Couldn't delete problem. Please try again.", restoring: false, error: true }); if (requestError instanceof Error) console.error(requestError); } finally { setDeletingIds(current => { const next = new Set(current); next.delete(item._id); return next; }); } }
-  async function undoDelete(toast: DeletionToast) { if (!toast.record || toast.restoring) return; const timer = timers.current.get(toast.id); if (timer) window.clearTimeout(timer); timers.current.delete(toast.id); setToasts(current => current.map(item => item.id === toast.id ? { ...item, restoring: true } : item)); try { await api.restoreProblem(toast.id, toast.record); setItems(current => current.some(item => item._id === toast.item._id) ? current : [...current, toast.item]); removeToast(toast.id); void loadAnalytics(); } catch (requestError) { setToasts(current => current.map(item => item.id === toast.id ? { ...item, record: null, message: "Couldn't restore problem. Please try again.", restoring: false, error: true } : item)); timers.current.set(toast.id, window.setTimeout(() => removeToast(toast.id), 3000)); if (requestError instanceof Error) console.error(requestError); } }
+  useEffect(loadAnalytics, []); useEffect(loadRevisionsDue, []);
+
   async function saveGoals(event: FormEvent) { event.preventDefault(); try { const response = await api.updateGoals(goals); setGoals(response.goals); setGoalMessage('Goals saved.'); window.setTimeout(() => setGoalMessage(''), 2500); } catch (goalError) { setGoalMessage(goalError instanceof Error ? goalError.message : 'Unable to save goals.'); } }
 
-  return <><main className="shell"><header><div><span className="eyebrow">DSA TRACKER</span><h1>Welcome back 👋</h1></div><div className="account">{user?.email}<button className="link-button" onClick={() => signOut().then(() => nav('/login'))}>Logout</button></div></header>{analytics ? <><section className="analytics-summary"><Metric label="Current streak" value={`${analytics.streak.current} days`}/><Metric label="Longest streak" value={`${analytics.streak.longest} days`}/><Metric label="Total solved" value={analytics.summary.total}/><Metric label="Today" value={analytics.summary.today}/><Metric label="This week" value={analytics.summary.thisWeek}/><Metric label="This month" value={analytics.summary.thisMonth}/></section><Heatmap data={analytics.activity} selected={selectedActivity} onSelect={setSelectedActivity}/><div className="analytics-grid"><Breakdown title="Difficulty" data={analytics.difficulty}/><Breakdown title="Languages" data={analytics.languages}/><Breakdown title="Topics" data={analytics.topics}/></div><section className="analytics-panel"><div className="section-heading"><h2>Progress trends</h2><select value={trendRange} onChange={e => setTrendRange(e.target.value)}><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option><option value="6m">Last 6 months</option><option value="all">All time</option></select></div><TrendChart points={analytics.trends[trendRange] || []}/></section><Goals analytics={analytics} goals={goals} setGoals={setGoals} saveGoals={saveGoals} message={goalMessage}/><Achievements achievements={analytics.achievements}/></> : analyticsError ? <p className="state error">{analyticsError}</p> : <p className="state">Loading analytics…</p>}<section className="stats"><Stat label="Total solved" value={items.length}/><Stat label="Easy" value={count('Easy')}/><Stat label="Medium" value={count('Medium')}/><Stat label="Hard" value={count('Hard')}/></section><section className="panel"><div className="panel-title"><h2>Problem history</h2><div className="controls"><input placeholder="Search name or number…" value={search} onChange={e => setSearch(e.target.value)}/><select value={platform} onChange={e => setPlatform(e.target.value)}><option>All</option><option>LeetCode</option></select><select value={language} onChange={e => setLanguage(e.target.value)}><option>All</option>{languages.map(value => <option key={value}>{value}</option>)}</select><select value={difficulty} onChange={e => setDifficulty(e.target.value)}><option>All</option><option>Easy</option><option>Medium</option><option>Hard</option></select><select value={sort} onChange={e => setSort(e.target.value)}><option value="newest">Newest</option><option value="oldest">Oldest</option><option value="numberAsc">Number ↑</option><option value="numberDesc">Number ↓</option></select></div></div>{loading ? <p className="state">Loading your problems…</p> : error ? <div className="state error">{error}<button onClick={load}>Retry</button></div> : shown.length === 0 ? <p className="state">No problems tracked yet.<br/><span className="muted">Solve a problem on LeetCode and get Accepted.</span></p> : <div className="table-wrap"><table><thead><tr><th>S.No.</th><th>Question #</th><th>Problem</th><th>Platform</th><th>Difficulty</th><th>Language</th><th>Status</th><th>Solved At</th><th>Action</th></tr></thead><tbody>{shown.map((item, index) => <tr key={item._id} onClick={() => window.open(item.problemId.url, '_blank')}><td>{index + 1}</td><td>{item.problemId.leetcodeId > 0 ? item.problemId.leetcodeId : '—'}</td><td className="title">{item.problemId.title}</td><td>{platformLabel(item.platform)}</td><td><span className={`badge ${item.problemId.difficulty.toLowerCase()}`}>{item.problemId.difficulty}</span></td><td>{languageLabel(item.language)}</td><td>Solved</td><td>{new Date(item.solvedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</td><td><button className="delete-button" aria-label={`Delete ${item.problemId.title}`} title="Delete problem" disabled={deletingIds.has(item._id)} onClick={event => { event.stopPropagation(); void deleteProblem(item); }}><TrashIcon/></button></td></tr>)}</tbody></table></div>}</section></main><div className="toast-stack" aria-live="polite">{toasts.map(toast => <div className={`toast ${toast.error ? 'toast-error' : ''}`} key={toast.id} role="status"><span>{toast.message}</span>{toast.record && <button className="toast-undo" disabled={toast.restoring} onClick={() => void undoDelete(toast)}>{toast.restoring ? 'Restoring…' : 'Undo'}</button>}</div>)}</div></>;
+  const name = user?.name?.trim();
+  const easy = analytics ? bucketCount(analytics.difficulty, 'easy') : 0;
+  const medium = analytics ? bucketCount(analytics.difficulty, 'medium') : 0;
+  const hard = analytics ? bucketCount(analytics.difficulty, 'hard') : 0;
+  const total = analytics?.summary.total ?? 0;
+
+  return (
+    <main className="shell page-shell">
+      <div className="hero-block">
+        <span className="eyebrow">DSA TRACKER</span>
+        <h1>{name ? `Welcome back, ${name}` : 'Welcome back'}</h1>
+        <div className="hero-row">
+          <div className="streak-block">
+            <div>
+              <span className="label">Current streak</span>
+              <div className="streak-number"><strong className="num">{analytics?.streak.current ?? 0}</strong><span>days</span></div>
+            </div>
+            {analytics && <Sparkline points={analytics.activity} />}
+          </div>
+          <div className="hero-actions">
+            <Link to="/revisions"><button type="button">Review queue</button></Link>
+            <Link to="/problems"><button type="button">View all problems</button></Link>
+          </div>
+        </div>
+      </div>
+
+      {analytics ? (
+        <>
+          <section className="bento">
+            <Tile wide label="Total solved" value={total}>
+              <div className="stack-bar">
+                <i style={{ width: `${total ? (easy / total) * 100 : 0}%`, background: 'var(--easy)' }} />
+                <i style={{ width: `${total ? (medium / total) * 100 : 0}%`, background: 'var(--medium)' }} />
+                <i style={{ width: `${total ? (hard / total) * 100 : 0}%`, background: 'var(--hard)' }} />
+              </div>
+              <div className="stack-legend">
+                <span><i style={{ background: 'var(--easy)' }} />{easy} Easy</span>
+                <span><i style={{ background: 'var(--medium)' }} />{medium} Med</span>
+                <span><i style={{ background: 'var(--hard)' }} />{hard} Hard</span>
+              </div>
+            </Tile>
+            <Tile label="Today" value={analytics.summary.today} />
+            <Tile label="This week" value={analytics.summary.thisWeek} />
+            <Tile label="This month" value={analytics.summary.thisMonth} />
+            <Tile label="Longest streak" value={analytics.streak.longest} note="days" />
+            <Tile label="Revisions due" value={revisionsDue.dueToday + revisionsDue.overdue} link="/revisions" note={revisionsDue.overdue > 0 ? `${revisionsDue.overdue} overdue` : undefined} noteTone="warn" />
+          </section>
+
+          <Heatmap data={analytics.activity} selected={selectedActivity} onSelect={setSelectedActivity} />
+
+          <div className="analytics-grid">
+            <Breakdown title="Difficulty" data={analytics.difficulty} />
+            <Breakdown title="Languages" data={analytics.languages} />
+            <Breakdown title="Topics" data={analytics.topics} />
+          </div>
+
+          <section className="analytics-panel">
+            <div className="section-heading"><h2>Progress trends</h2><select value={trendRange} onChange={e => setTrendRange(e.target.value)}><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option><option value="6m">Last 6 months</option><option value="all">All time</option></select></div>
+            <TrendChart points={analytics.trends[trendRange] || []} />
+          </section>
+
+          <Goals analytics={analytics} goals={goals} setGoals={setGoals} saveGoals={saveGoals} message={goalMessage} />
+
+          <div className="dashboard-split">
+            <RecentProblems />
+            <Achievements achievements={analytics.achievements} />
+          </div>
+        </>
+      ) : analyticsError ? <p className="state error">{analyticsError}</p> : <p className="state">Loading analytics…</p>}
+    </main>
+  );
 }
 
-function Metric({ label, value }: { label: string; value: string | number }) { const display = typeof value === 'string' ? value.replace(/^(\d+) days$/, (_, count) => `${count} ${count === '1' ? 'day' : 'days'}`) : value; return <div className="analytics-metric"><span>{label}</span><strong>{display}</strong></div>; }
-function Stat({ label, value }: { label: string; value: number }) { return <div className="stat"><span>{label}</span><strong>{value}</strong></div>; }
-function TrashIcon() { return <svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M8 6V4h8v2m-9 0 1 15h8l1-15M10 10v7m4-7v7"/></svg>; }
-function Heatmap({ data, selected, onSelect }: { data: { date: string; count: number }[]; selected: string; onSelect: (date: string) => void }) { const [hovered, setHovered] = useState<{ date: string; count: number } | null>(null); const active = hovered || data.find(point => point.date === selected); return <section className="analytics-panel"><div className="section-heading"><h2>Activity</h2>{active && <span className="activity-tooltip" role="status">{readableDate(active.date)}<strong>{active.count} {active.count === 1 ? 'problem' : 'problems'} solved</strong></span>}</div><div className="heatmap-heading"><span>Daily activity · Last 12 months</span><span className="heatmap-legend"><span>Less</span><i className="heat-cell heat-0"/><i className="heat-cell heat-1"/><i className="heat-cell heat-2"/><i className="heat-cell heat-3"/><i className="heat-cell heat-4"/><span>More</span></span></div><div className="heatmap">{data.map(point => <button key={point.date} className={`heat-cell heat-${Math.min(point.count, 4)} ${selected === point.date ? 'selected' : ''}`} title={`${readableDate(point.date)}: ${point.count} ${point.count === 1 ? 'problem' : 'problems'} solved`} aria-label={`${readableDate(point.date)}: ${point.count} ${point.count === 1 ? 'problem' : 'problems'} solved`} onMouseEnter={() => setHovered(point)} onMouseLeave={() => setHovered(null)} onFocus={() => setHovered(point)} onBlur={() => setHovered(null)} onClick={() => onSelect(point.date)}/>)}</div></section>; }
-function Breakdown({ title, data }: { title: string; data: AnalyticsBucket[] }) { const max = Math.max(...data.map(item => item.count), 0); return <section className="analytics-panel breakdown"><h2>{title}</h2>{data.length === 0 ? <p className="muted">Start solving to build your history.</p> : [...data].sort((a, b) => b.count - a.count).map(item => <div className="breakdown-row" key={item.name}><div><span>{item.name}</span><strong>{item.count}{item.percentage !== undefined ? ` (${item.percentage}%)` : ''}</strong></div><div className="bar"><i style={{ width: `${max ? item.count / max * 100 : 0}%` }}/></div></div>)}</section>; }
-function TrendChart({ points }: { points: { date: string; count: number }[] }) { const max = Math.max(...points.map(point => point.count), 0); const labels = points.length > 2 ? [points[0], points[Math.floor(points.length / 2)], points[points.length - 1]] : points; return points.length === 0 ? <p className="state">Start solving to build your trend.</p> : <><div className="trend-chart">{points.map(point => <div className="trend-column" key={point.date} title={`${readableDate(point.date)}: ${point.count} ${point.count === 1 ? 'problem' : 'problems'} solved`} aria-label={`${readableDate(point.date)}: ${point.count} ${point.count === 1 ? 'problem' : 'problems'} solved`}><i style={{ height: `${max ? Math.max(4, point.count / max * 100) : 4}%` }}/></div>)}</div><div className="trend-labels">{labels.map(point => <span key={point.date}>{readableDate(point.date)}<strong>{point.count} solved</strong></span>)}</div></>; }
-function Goals({ analytics, goals, setGoals, saveGoals, message }: { analytics: DashboardAnalytics; goals: DashboardAnalytics['goals']; setGoals: (goals: DashboardAnalytics['goals']) => void; saveGoals: (event: FormEvent) => void; message: string }) { const entries: [keyof DashboardAnalytics['goals'], string, number][] = [['daily', 'Today', analytics.summary.today], ['weekly', 'This week', analytics.summary.thisWeek], ['monthly', 'This month', analytics.summary.thisMonth]]; return <section className="analytics-panel goals"><div className="section-heading"><h2>Goals</h2>{message && <span className="muted">{message}</span>}</div><form onSubmit={saveGoals}><div className="goal-grid">{entries.map(([key, label, value]) => { const target = goals[key]; const complete = value >= target && target > 0; const remaining = Math.max(0, target - value); return <label key={key}>{label}<input type="number" min="0" value={target} onChange={event => setGoals({ ...goals, [key]: Number(event.target.value) })}/><span>{value} / {target} problems</span><div className="progress"><i style={{ width: `${target ? Math.min(100, value / target * 100) : 0}%` }}/></div><small className="goal-status">{complete ? 'Goal completed!' : `${remaining} more ${remaining === 1 ? 'problem' : 'problems'} to reach your goal`}</small></label>; })}</div><button>Save goals</button></form></section>; }
-function Achievements({ achievements }: { achievements: DashboardAnalytics['achievements'] }) { return <section className="analytics-panel achievements"><h2>Achievements</h2><div className="achievement-grid">{achievements.map(item => <div className={item.unlocked ? 'achievement unlocked' : 'achievement'} key={item.id}><strong>{item.unlocked ? '✓' : '○'}</strong><span>{item.name}</span></div>)}</div></section>; }
+function Tile({ label, value, note, noteTone, link, wide, children }: { label: string; value: number; note?: string; noteTone?: 'warn' | 'good'; link?: string; wide?: boolean; children?: React.ReactNode }) {
+  const { ref, onMouseMove, onMouseLeave } = useMagnetic<HTMLDivElement>();
+  const content = <div ref={ref} className={`tile ${wide ? 'tile-wide' : ''}`} onMouseMove={onMouseMove} onMouseLeave={onMouseLeave}>
+    <p className="tile-label">{label}</p>
+    <div className="tile-value num">{value}</div>
+    {note && <span className={`tile-note ${noteTone || ''}`}>{note}</span>}
+    {children}
+  </div>;
+  return link ? <Link className="tile-link" to={link}>{content}</Link> : content;
+}
+
+function Sparkline({ points }: { points: { date: string; count: number }[] }) {
+  const recent = points.slice(-14);
+  if (recent.length < 2) return null;
+  const max = Math.max(...recent.map(point => point.count), 1);
+  const step = 160 / (recent.length - 1);
+  const path = recent.map((point, index) => `${index * step},${36 - (point.count / max) * 32}`).join(' ');
+  return <svg className="spark" viewBox="0 0 160 40" preserveAspectRatio="none" aria-hidden="true"><polyline points={path} fill="none" stroke="var(--accent-bg)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+}
+
+function Heatmap({ data, selected, onSelect }: { data: { date: string; count: number }[]; selected: string; onSelect: (date: string) => void }) { const [hovered, setHovered] = useState<{ date: string; count: number } | null>(null); const active = hovered || data.find(point => point.date === selected); return <section className="analytics-panel"><div className="section-heading"><h2>Activity</h2>{active && <span className="activity-tooltip" role="status">{readableDate(active.date)}<strong>{active.count} {active.count === 1 ? 'problem' : 'problems'} solved</strong></span>}</div><div className="heatmap-heading"><span>Daily activity · Last 12 months</span><span className="heatmap-legend"><span>Less</span><i className="heat-cell heat-0" /><i className="heat-cell heat-1" /><i className="heat-cell heat-2" /><i className="heat-cell heat-3" /><i className="heat-cell heat-4" /><span>More</span></span></div><div className="heatmap">{data.map(point => <button key={point.date} className={`heat-cell heat-${Math.min(point.count, 4)} ${selected === point.date ? 'selected' : ''}`} title={`${readableDate(point.date)}: ${point.count} ${point.count === 1 ? 'problem' : 'problems'} solved`} aria-label={`${readableDate(point.date)}: ${point.count} ${point.count === 1 ? 'problem' : 'problems'} solved`} onMouseEnter={() => setHovered(point)} onMouseLeave={() => setHovered(null)} onFocus={() => setHovered(point)} onBlur={() => setHovered(null)} onClick={() => onSelect(point.date)} />)}</div></section>; }
+function Breakdown({ title, data }: { title: string; data: AnalyticsBucket[] }) { const max = Math.max(...data.map(item => item.count), 0); return <section className="analytics-panel breakdown"><h2>{title}</h2>{data.length === 0 ? <p className="muted">Start solving to build your history.</p> : [...data].sort((a, b) => b.count - a.count).map(item => <div className="breakdown-row" key={item.name}><div><span>{item.name}</span><strong>{item.count}{item.percentage !== undefined ? ` (${item.percentage}%)` : ''}</strong></div><div className="bar"><i style={{ width: `${max ? item.count / max * 100 : 0}%` }} /></div></div>)}</section>; }
+function TrendChart({ points }: { points: { date: string; count: number }[] }) {
+  if (points.length === 0) return <p className="state">Start solving to build your trend.</p>;
+  const max = Math.max(...points.map(point => point.count), 1);
+  const labels = points.length > 2 ? [points[0], points[Math.floor(points.length / 2)], points[points.length - 1]] : points;
+  const width = 600, height = 190, padTop = 16, padBottom = 10;
+  const usable = height - padTop - padBottom;
+  const stepX = points.length > 1 ? width / (points.length - 1) : 0;
+  const coords = points.map((point, index) => ({ x: index * stepX, y: padTop + usable - (point.count / max) * usable, point }));
+  const linePath = coords.map((c, index) => `${index === 0 ? 'M' : 'L'}${c.x.toFixed(1)},${c.y.toFixed(1)}`).join(' ');
+  const last = coords[coords.length - 1];
+  const areaPath = `${linePath} L${last.x.toFixed(1)},${height - padBottom} L0,${height - padBottom} Z`;
+  return (
+    <>
+      <div className="trend-chart">
+        <svg className="trend-svg" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-hidden="true">
+          <defs>
+            <linearGradient id="trendFill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="var(--accent-bg)" stopOpacity="0.35" />
+              <stop offset="100%" stopColor="var(--accent-bg)" stopOpacity="0" />
+            </linearGradient>
+          </defs>
+          <g className="trend-grid">
+            <line x1="0" y1={padTop} x2={width} y2={padTop} />
+            <line x1="0" y1={padTop + usable / 2} x2={width} y2={padTop + usable / 2} />
+            <line x1="0" y1={height - padBottom} x2={width} y2={height - padBottom} />
+          </g>
+          <path className="trend-area" d={areaPath} />
+          <path className="trend-line" d={linePath} />
+        </svg>
+        <div className="trend-dots">
+          {coords.map((c, index) => (
+            <button
+              key={c.point.date}
+              type="button"
+              className={`trend-dot ${index === coords.length - 1 ? 'latest' : ''}`}
+              style={{ left: `${(c.x / width) * 100}%`, top: `${(c.y / height) * 100}%` }}
+              title={`${readableDate(c.point.date)}: ${c.point.count} ${c.point.count === 1 ? 'problem' : 'problems'} solved`}
+              aria-label={`${readableDate(c.point.date)}: ${c.point.count} ${c.point.count === 1 ? 'problem' : 'problems'} solved`}
+            />
+          ))}
+        </div>
+      </div>
+      <div className="trend-labels">{labels.map(point => <span key={point.date}>{readableDate(point.date)}<strong>{point.count} solved</strong></span>)}</div>
+    </>
+  );
+}
+function GoalRing({ value, target }: { value: number; target: number }) {
+  const radius = 22, circumference = 2 * Math.PI * radius;
+  const pct = target > 0 ? Math.min(1, value / target) : 0;
+  const complete = target > 0 && value >= target;
+  return (
+    <svg className="goal-ring" width="54" height="54" viewBox="0 0 54 54">
+      <circle className="ring-track" cx="27" cy="27" r={radius} />
+      <circle
+        className={`ring-fill ${complete ? 'complete' : ''}`}
+        cx="27" cy="27" r={radius}
+        strokeDasharray={circumference}
+        strokeDashoffset={circumference * (1 - pct)}
+      />
+      <text className="goal-ring-value" x="27" y="27" textAnchor="middle" dominantBaseline="central">{Math.round(pct * 100)}%</text>
+    </svg>
+  );
+}
+function Goals({ analytics, goals, setGoals, saveGoals, message }: { analytics: DashboardAnalytics; goals: DashboardAnalytics['goals']; setGoals: (goals: DashboardAnalytics['goals']) => void; saveGoals: (event: FormEvent) => void; message: string }) { const entries: [keyof DashboardAnalytics['goals'], string, number][] = [['daily', 'Today', analytics.summary.today], ['weekly', 'This week', analytics.summary.thisWeek], ['monthly', 'This month', analytics.summary.thisMonth]]; return <section className="analytics-panel goals"><div className="section-heading"><h2>Goals</h2>{message && <span className="muted">{message}</span>}</div><form onSubmit={saveGoals}><div className="goal-grid">{entries.map(([key, label, value]) => { const target = goals[key]; const complete = value >= target && target > 0; const remaining = Math.max(0, target - value); return <label key={key}><div className="goal-ring-row"><GoalRing value={value} target={target} /><div className="goal-fields"><span>{label}</span><input type="text" inputMode="numeric" pattern="[0-9]*" value={target} onChange={event => setGoals({ ...goals, [key]: Number(event.target.value.replace(/\D/g, '').replace(/^0+(?=\d)/, '')) })} /><span>{value} / {target} problems</span></div></div><small className={`goal-status ${complete ? 'complete' : ''}`}>{complete ? 'Goal completed!' : `${remaining} more ${remaining === 1 ? 'problem' : 'problems'} to reach your goal`}</small></label>; })}</div><button>Save goals</button></form></section>; }
+
+function AchievementIcon({ id }: { id: string }) {
+  if (id.includes('streak')) return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2c1 4-3 5-3 9a3 3 0 006 0c0-1-1-2-1-3 2 1 4 3 4 6a6 6 0 01-12 0c0-5 3-6 6-12z" /></svg>;
+  if (id.includes('hard')) return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8z" /></svg>;
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 21h8M12 17v4M7 4h10v4a5 5 0 01-10 0V4z" /><path d="M7 5H4a3 3 0 003 3M17 5h3a3 3 0 01-3 3" /></svg>;
+}
+function Achievements({ achievements }: { achievements: DashboardAnalytics['achievements'] }) {
+  const unlockedCount = achievements.filter(item => item.unlocked).length;
+  return (
+    <section className="analytics-panel achievements">
+      <div className="achievements-head"><h2>Achievements</h2><span className="achievements-count">{unlockedCount}/{achievements.length} unlocked</span></div>
+      <div className="achievement-grid">
+        {achievements.map(item => (
+          <div className={item.unlocked ? 'achievement unlocked' : 'achievement'} key={item.id}>
+            <span className="badge-icon"><AchievementIcon id={item.id} /></span>
+            <span>{item.name}</span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}

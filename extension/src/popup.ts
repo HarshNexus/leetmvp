@@ -65,4 +65,14 @@ async function disconnect() {
   render(null, 'Account disconnected.');
 }
 
-getUser().then(user => render(user)).catch(() => render(null, 'Backend unavailable.'));
+async function init() {
+  const { user: cachedUser } = (await chrome.storage.local.get('user')) as { user?: User };
+  if (cachedUser) render(cachedUser);
+  else render(null);
+  try {
+    render(await getUser());
+  } catch {
+    if (!cachedUser) render(null, 'Backend unavailable.');
+  }
+}
+init();

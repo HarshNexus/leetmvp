@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../services/api';
 import type { Revision } from '../types';
 
@@ -172,6 +172,60 @@ const formatGroupLabel = (date: Date) => {
   return dueDay.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 };
 
+// Swipe accelerator for due/overdue rows: drag right to mark solved on the
+// spot, drag left to open the same review modal the "Review" button opens
+// (needed since "Needed Hint" / "Not Solved" can't be told apart by a swipe
+// direction alone). Clicks on links/buttons inside the row still work
+// normally - only a drag that starts elsewhere on the row is captured.
+function SwipeableRow({ children, onSwipeRight, onSwipeLeft }: { children: React.ReactNode; onSwipeRight: () => void; onSwipeLeft: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const drag = useRef({ startX: 0, dx: 0, active: false });
+
+  const setTint = (dx: number) => {
+    const node = ref.current?.parentElement;
+    if (!node) return;
+    const right = node.querySelector<HTMLElement>('.swipe-tint.right');
+    const left = node.querySelector<HTMLElement>('.swipe-tint.left');
+    if (right) right.style.opacity = String(Math.max(0, Math.min(1, dx / 90)));
+    if (left) left.style.opacity = String(Math.max(0, Math.min(1, -dx / 90)));
+  };
+
+  const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if ((event.target as HTMLElement).closest('a,button')) return;
+    drag.current = { startX: event.clientX, dx: 0, active: true };
+    ref.current?.setPointerCapture(event.pointerId);
+    ref.current?.classList.add('dragging');
+  };
+  const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!drag.current.active || !ref.current) return;
+    const dx = event.clientX - drag.current.startX;
+    drag.current.dx = dx;
+    ref.current.style.transform = `translateX(${dx}px) rotate(${dx / 28}deg)`;
+    setTint(dx);
+  };
+  const release = () => {
+    if (!drag.current.active || !ref.current) return;
+    drag.current.active = false;
+    ref.current.classList.remove('dragging');
+    ref.current.style.transform = '';
+    setTint(0);
+    const dx = drag.current.dx;
+    drag.current.dx = 0;
+    if (dx > 90) onSwipeRight();
+    else if (dx < -90) onSwipeLeft();
+  };
+
+  return (
+    <>
+      <span className="swipe-tint right">Solved ✓</span>
+      <span className="swipe-tint left">Review</span>
+      <div ref={ref} className="swipe-target" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={release} onPointerCancel={release}>
+        {children}
+      </div>
+    </>
+  );
+}
+
 export default function Revisions() {
   const [rows, setRows] = useState<Revision[]>([]);
   const [rawRows, setRawRows] = useState<Revision[]>([]);
@@ -288,14 +342,13 @@ export default function Revisions() {
     }
   };
 
-  const submitReview = async (result: ReviewChoice) => {
-    if (!reviewTarget) return;
+  const finishReview = async (revision: Revision, result: ReviewChoice) => {
     try {
       if (result === 'Needed Hint') {
-        const solutionsUrl = solutionsUrlFor(reviewTarget);
+        const solutionsUrl = solutionsUrlFor(revision);
         if (solutionsUrl) window.open(solutionsUrl, '_blank', 'noopener,noreferrer');
       }
-      await api.completeRevision(reviewTarget._id, result);
+      await api.completeRevision(revision._id, result);
       setReviewNotice(
         result === 'Solved'
           ? 'Question review completed.'
@@ -311,6 +364,7 @@ export default function Revisions() {
       console.error('[Revision UI] Complete failed:', requestError);
     }
   };
+  const submitReview = (result: ReviewChoice) => { if (reviewTarget) void finishReview(reviewTarget, result); };
 
   const deleteRevision = async (id: string) => {
     try {
@@ -363,7 +417,7 @@ export default function Revisions() {
       <div className="page-intro">
         <span className="eyebrow">RETENTION</span>
         <h1>Revision</h1>
-        <p className="muted">Review your solved problems at the right time.</p>
+        <p className="muted">Review your solved problems at the right time. Drag a due card right to mark it solved, or left to review it.</p>
       </div>
 
       <section className="revision-summary">
@@ -460,8 +514,9 @@ export default function Revisions() {
                     const dueAt = dueDateFor(item);
                     const status = isOverdue(item) ? 'OVERDUE' : isToday(item) ? 'DUE' : 'UPCOMING';
                     const overdueDays = status === 'OVERDUE' && dueAt ? Math.max(0, Math.ceil((Date.now() - new Date(dueAt).getTime()) / 86400000)) : 0;
-                    return (
-                      <div className="revision-row" key={item._id}>
+                    const actionable = status === 'DUE' || status === 'OVERDUE';
+                    const rowBody = (
+                      <>
                         <div className="revision-row-main">
                           <div className="problem-name-wrap">
                             <span className="problem-name">{item.problemId?.title || 'Problem'}</span>
@@ -485,11 +540,22 @@ export default function Revisions() {
                         </div>
                         <div className="revision-row-actions">
                           <a href={item.problemId?.url || '#'} target="_blank" rel="noreferrer" aria-label={`Open ${item.problemId?.title || 'problem'}`}>↗</a>
-                          {(status === 'DUE' || status === 'OVERDUE') && (
+                          {actionable && (
                             <button type="button" onClick={() => setReviewTarget(item)}>Review</button>
                           )}
                           <button type="button" className="outline-button small" onClick={() => void deleteRevision(item._id)}>🗑</button>
                         </div>
+                      </>
+                    );
+                    return (
+                      <div className="revision-row" key={item._id}>
+                        {actionable ? (
+                          <SwipeableRow onSwipeRight={() => void finishReview(item, 'Solved')} onSwipeLeft={() => setReviewTarget(item)}>
+                            {rowBody}
+                          </SwipeableRow>
+                        ) : (
+                          <div className="revision-row-inner">{rowBody}</div>
+                        )}
                       </div>
                     );
                   })}
@@ -502,13 +568,13 @@ export default function Revisions() {
 
       {pickerOpen && (
         <div className="modal-backdrop" onClick={() => setPickerOpen(false)}>
-          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+          <div className="modal-card picker-card" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <h3>Select Problems</h3>
               <button type="button" className="text-button" onClick={() => setPickerOpen(false)}>Close</button>
             </div>
             <input placeholder="Search problem name or number..." value={pickerSearch} onChange={(event) => setPickerSearch(event.target.value)} />
-            <div style={{ maxHeight: 360, overflowY: 'auto' }}>
+            <div className="picker-scroll">
               {problemOptions
                 .filter((problemEntry) => {
                   const query = pickerSearch.toLowerCase();
