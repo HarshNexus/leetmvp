@@ -1,6 +1,12 @@
 import type { AuthResponse, DashboardAnalytics, Revision, SolvedProblem, User } from '../types';
 const base = import.meta.env.VITE_API_URL;
 const inflightGets = new Map<string, Promise<unknown>>();
+// Survives page-to-page navigation (component unmount/remount) since it lives
+// at module scope, not in React state - lets a revisited page render its last
+// known data immediately instead of flashing an empty/zeroed state while it
+// refetches in the background.
+const getCache = new Map<string, unknown>();
+export function getCached<T>(path: string): T | undefined { return getCache.get(path) as T | undefined; }
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const isGet = !options.method || options.method.toUpperCase() === 'GET';
   if (isGet && inflightGets.has(path)) return inflightGets.get(path) as Promise<T>;
@@ -16,6 +22,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(body?.error?.message || 'Request failed');
+    if (isGet) getCache.set(path, body?.data);
     return body?.data as T;
   })();
   if (isGet) { inflightGets.set(path, run); run.finally(() => inflightGets.delete(path)); }

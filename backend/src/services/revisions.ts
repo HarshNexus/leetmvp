@@ -2,7 +2,7 @@ import { Revision } from '../models/Revision';
 import { SolvedProblem } from '../models/SolvedProblem';
 
 export const ENABLED_REVISION_DAYS = [7, 21, 30];
-export const DEFAULT_REVISION_STAGES = [1, 7, 21];
+export const DEFAULT_REVISION_STAGES = [1];
 
 type RevisionLike = {
   _id?: unknown;
@@ -44,9 +44,9 @@ export function getRevisionStateFromDate(value: Date, now = new Date()) {
 }
 
 /**
- * 1/7/21-day revisions are always scheduled for every solved problem. Any
- * additional intervals a user configures are added on top of that baseline,
- * never in place of it.
+ * A 1-day revision is always scheduled for every solved problem. Every other
+ * interval is entirely up to the user - configured stages are added on top
+ * of that single mandatory baseline, never in place of it.
  */
 export function normalizeRevisionStages(value: unknown) {
   const custom = Array.isArray(value)
@@ -108,15 +108,23 @@ export async function pruneDuplicateActiveRevisions(userId: any, problemId?: any
  */
 export async function normalizeActiveRevisions(userId: any, problemId?: any, platform?: string) {
   const revisions = await Revision.find(activeRevisionQuery(userId, problemId, platform)).lean();
+  const ops = [];
   for (const revision of revisions) {
     const dueAt = getRevisionDueAt(revision);
+    const staleStatus = revision.status !== 'active';
+    const staleDates = Boolean(dueAt) && (
+      !revision.scheduledAt || new Date(revision.scheduledAt).getTime() !== dueAt!.getTime() ||
+      !revision.nextReviewAt || new Date(revision.nextReviewAt).getTime() !== dueAt!.getTime()
+    );
+    if (!staleStatus && !staleDates) continue;
     const set: Record<string, unknown> = { status: 'active' };
     if (dueAt) {
       set.scheduledAt = dueAt;
       set.nextReviewAt = dueAt;
     }
-    await Revision.updateOne({ _id: revision._id }, { $set: set });
+    ops.push({ updateOne: { filter: { _id: revision._id }, update: { $set: set } } });
   }
+  if (ops.length) await Revision.bulkWrite(ops, { ordered: false });
 
   if (problemId !== undefined) {
     await pruneDuplicateActiveRevisions(userId, problemId);
@@ -153,6 +161,20 @@ export async function ensurePlan(
   }
   return Revision.findOne({ userId, problemId, platform, stageDays: normalizedStages[0] })
     .sort({ nextReviewAt: 1, scheduledAt: 1, createdAt: 1 });
+}
+
+/**
+ * When a user removes a custom interval from their schedule, any not-yet-due
+ * revision still pending for that stage should stop showing up. Completed
+ * revisions are left alone since they're history, not a live plan.
+ */
+export async function pruneRemovedRevisionStages(userId: any, stages: number[]) {
+  await Revision.deleteMany({
+    userId,
+    completedAt: { $exists: false },
+    status: { $ne: 'completed' },
+    stageDays: { $nin: stages },
+  });
 }
 
 /**

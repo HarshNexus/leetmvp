@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { api } from '../services/api';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { api, getCached } from '../services/api';
 import type { Revision } from '../types';
 
 type ReviewFilter = 'all' | 'overdue' | 'today' | 'this-week';
@@ -117,6 +117,7 @@ const formatDate = (value?: string | null) => {
   return new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 };
 
+type TrackerStage = { stageDays: number; done: boolean };
 type TrackerRow = {
   problemId: string;
   title: string;
@@ -124,13 +125,14 @@ type TrackerRow = {
   difficulty?: string;
   url?: string;
   solvedAt: string | null;
-  done: [boolean, boolean, boolean]; // 1-day, 7-day, 21-day
+  stages: TrackerStage[];
 };
 
-// Every solved problem gets exactly 3 mandatory revisions (1/7/21-day).
-// This groups the raw revision list (which includes completed rows) by
-// problem and marks which of those 3 stages are already done, so the
-// checkmarks are always derived from real data - never manually toggled.
+// Revision stages are user-configurable (1-day is the only mandatory one -
+// see Settings), so a problem can carry any number of them. This groups the
+// raw revision list (which includes completed rows) by problem and marks
+// which of its actual stages are already done, so the checkmarks are always
+// derived from real data - never manually toggled or assumed to be 1/7/21.
 const buildTrackerRows = (allRows: Revision[]): TrackerRow[] => {
   const map = new Map<string, TrackerRow>();
   for (const row of allRows) {
@@ -146,17 +148,18 @@ const buildTrackerRows = (allRows: Revision[]): TrackerRow[] => {
         difficulty: problem.difficulty,
         url: problem.url,
         solvedAt: row.solvedAt ?? null,
-        done: [false, false, false],
+        stages: [],
       };
       map.set(key, entry);
     }
     if (!entry.solvedAt && row.solvedAt) entry.solvedAt = row.solvedAt;
     const isDone = Boolean(row.completedAt) || row.status?.toLowerCase() === 'completed';
-    if (!isDone) continue;
-    if (row.stageDays === 1) entry.done[0] = true;
-    else if (row.stageDays === 7) entry.done[1] = true;
-    else if (row.stageDays === 21) entry.done[2] = true;
+    const stageDays = row.stageDays ?? 0;
+    let stage = entry.stages.find((existing) => existing.stageDays === stageDays);
+    if (!stage) { stage = { stageDays, done: false }; entry.stages.push(stage); }
+    if (isDone) stage.done = true;
   }
+  for (const entry of map.values()) entry.stages.sort((a, b) => a.stageDays - b.stageDays);
   return [...map.values()].sort((a, b) => (toDate(b.solvedAt)?.getTime() ?? 0) - (toDate(a.solvedAt)?.getTime() ?? 0));
 };
 
@@ -206,13 +209,23 @@ function SwipeableRow({ children, onSwipeRight, onSwipeLeft }: { children: React
   const release = () => {
     if (!drag.current.active || !ref.current) return;
     drag.current.active = false;
-    ref.current.classList.remove('dragging');
-    ref.current.style.transform = '';
-    setTint(0);
+    const node = ref.current;
     const dx = drag.current.dx;
     drag.current.dx = 0;
-    if (dx > 90) onSwipeRight();
-    else if (dx < -90) onSwipeLeft();
+    node.classList.remove('dragging');
+    if (dx > 90) {
+      // Keep sliding the card off in the direction it was swiped instead of
+      // snapping back to center - it only actually leaves the list once the
+      // "mark solved" request finishes, so this keeps the card in motion
+      // through that gap instead of settling back into place first.
+      node.style.transform = 'translateX(140%) rotate(10deg)';
+      setTint(0);
+      window.setTimeout(onSwipeRight, 280);
+      return;
+    }
+    node.style.transform = '';
+    setTint(0);
+    if (dx < -90) onSwipeLeft();
   };
 
   return (
@@ -226,11 +239,79 @@ function SwipeableRow({ children, onSwipeRight, onSwipeLeft }: { children: React
   );
 }
 
-export default function Revisions() {
-  const [rows, setRows] = useState<Revision[]>([]);
-  const [rawRows, setRawRows] = useState<Revision[]>([]);
-  const [showTracker, setShowTracker] = useState(false);
+const activeOnly = (allRows: Revision[]) => allRows.filter((row) => {
+  if (row.completedAt || row.status?.toLowerCase() === 'completed') return false;
+  return true;
+});
+
+function RevisionScheduleCard({ onChange }: { onChange: () => void }) {
+  const [days, setDays] = useState<number[]>([1]);
   const [loading, setLoading] = useState(true);
+  const [newDay, setNewDay] = useState('');
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => { api.revisionsSettings().then(result => setDays(result.revisionStages)).catch(() => undefined).finally(() => setLoading(false)); }, []);
+
+  async function persist(next: number[]) {
+    setBusy(true);
+    try {
+      const result = await api.updateRevisionSettings([...new Set(next)].sort((a, b) => a - b));
+      setDays(result.revisionStages);
+      onChange();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Unable to update schedule.');
+    } finally {
+      setBusy(false);
+      window.setTimeout(() => setMessage(''), 2500);
+    }
+  }
+
+  function addDay(event: FormEvent) {
+    event.preventDefault();
+    const value = Number.parseInt(newDay, 10);
+    if (!Number.isInteger(value) || value <= 0 || value > 3650 || days.includes(value)) { setNewDay(''); return; }
+    setNewDay('');
+    void persist([...days, value]);
+  }
+
+  function removeDay(day: number) {
+    if (day === 1) return;
+    void persist(days.filter(existing => existing !== day));
+  }
+
+  return (
+    <section className="panel revision-schedule-panel">
+      <h2>Revision schedule</h2>
+      <p className="muted">Choose which days you want to revise a solved problem on. The 1-day revision is always included.</p>
+      {loading ? <p className="muted">Loading…</p> : (
+        <div className="day-chip-row">
+          {days.map(day => (
+            <span className={`day-chip ${day === 1 ? 'locked' : ''}`} key={day}>
+              {day === 1 ? '1 Day' : `${day} Days`}
+              {day !== 1 && <button type="button" aria-label={`Remove ${day}-day revision`} disabled={busy} onClick={() => removeDay(day)}>×</button>}
+            </span>
+          ))}
+        </div>
+      )}
+      <form className="day-chip-form" onSubmit={addDay}>
+        <input type="number" min="2" max="3650" placeholder="e.g. 11" value={newDay} onChange={event => setNewDay(event.target.value)} disabled={busy}/>
+        <button type="submit" className="outline-button small" disabled={busy || !newDay}>+ Add day</button>
+      </form>
+      {message && <span className="muted">{message}</span>}
+    </section>
+  );
+}
+
+export default function Revisions() {
+  // Seed from the API client's cache (survives switching pages and back) so
+  // a revisit renders the previous list immediately instead of flashing an
+  // empty "Loading…" state while it refetches in the background.
+  const cachedRawRows = asRevisionList(getCached('/revisions'));
+  const [rows, setRows] = useState<Revision[]>(() => activeOnly(cachedRawRows));
+  const [rawRows, setRawRows] = useState<Revision[]>(cachedRawRows);
+  const [showTracker, setShowTracker] = useState(false);
+  const [loading, setLoading] = useState(cachedRawRows.length === 0);
   const [error, setError] = useState('');
   const [selectedFilter, setSelectedFilter] = useState<ReviewFilter>('all');
   const [reviewTarget, setReviewTarget] = useState<Revision | null>(null);
@@ -243,17 +324,12 @@ export default function Revisions() {
   const [, refreshClock] = useState(0);
 
   const load = async () => {
-    setLoading(true);
     setError('');
     try {
       const response = await api.revisions();
       const allRows = asRevisionList(response);
       setRawRows(allRows);
-      const nextRows = allRows.filter((row) => {
-        if (row.completedAt || row.status?.toLowerCase() === 'completed') return false;
-        return true;
-      });
-      setRows(nextRows);
+      setRows(activeOnly(allRows));
     } catch (requestError) {
       const message = requestError instanceof Error ? requestError.message : 'Unable to load revisions.';
       setError(message);
@@ -420,11 +496,14 @@ export default function Revisions() {
         <p className="muted">Review your solved problems at the right time. Drag a due card right to mark it solved, or left to review it.</p>
       </div>
 
-      <section className="revision-summary">
-        <div className="revision-metric"><span>Overdue</span><strong>{counts.overdue}</strong></div>
-        <div className="revision-metric"><span>Today</span><strong>{counts.today}</strong></div>
-        <div className="revision-metric"><span>This Week</span><strong>{counts.thisWeek}</strong></div>
-        <div className="revision-metric"><span>All</span><strong>{counts.all}</strong></div>
+      <section className="revision-top-row">
+        <div className="revision-stats-grid">
+          <div className="revision-metric"><span>Overdue</span><strong>{counts.overdue}</strong></div>
+          <div className="revision-metric"><span>Today</span><strong>{counts.today}</strong></div>
+          <div className="revision-metric"><span>This Week</span><strong>{counts.thisWeek}</strong></div>
+          <div className="revision-metric"><span>All</span><strong>{counts.all}</strong></div>
+        </div>
+        <RevisionScheduleCard onChange={() => void load()} />
       </section>
 
       <section className="panel revision-panel">
@@ -464,7 +543,7 @@ export default function Revisions() {
           trackerRows.length === 0 ? (
             <div className="empty-state-box">
               <h3>No solved problems yet</h3>
-              <p>Solve a problem to start tracking its 3 revisions here.</p>
+              <p>Solve a problem to start tracking its revisions here.</p>
             </div>
           ) : (
             <div className="revision-row-list">
@@ -481,10 +560,10 @@ export default function Revisions() {
                     </span>
                   </div>
                   <div className="tracker-checkboxes">
-                    {(['1st', '2nd', '3rd'] as const).map((label, index) => (
-                      <label className="tracker-checkbox" key={label}>
-                        <input type="checkbox" checked={row.done[index]} disabled readOnly />
-                        <span>{label} Revision</span>
+                    {row.stages.map((stage) => (
+                      <label className="tracker-checkbox" key={stage.stageDays}>
+                        <input type="checkbox" checked={stage.done} disabled readOnly />
+                        <span>{stage.stageDays === 1 ? '1 Day' : `${stage.stageDays} Day`} Revision</span>
                       </label>
                     ))}
                   </div>

@@ -15,10 +15,11 @@ describe('revision state helpers', () => {
     expect(legacy?.toISOString()).toBe('2026-08-29T10:00:00.000Z');
   });
 
-  it('always includes the 1/7/21-day baseline plus any custom intervals, deduped and sorted', () => {
+  it('always includes the mandatory 1-day baseline plus any custom intervals, deduped and sorted', () => {
     expect(normalizeRevisionStages([])).toEqual(DEFAULT_REVISION_STAGES);
-    expect(normalizeRevisionStages(undefined)).toEqual([1, 7, 21]);
+    expect(normalizeRevisionStages(undefined)).toEqual([1]);
     expect(normalizeRevisionStages([21, 7, 7, 1])).toEqual([1, 7, 21]);
-    expect(normalizeRevisionStages([3, 14])).toEqual([1, 3, 7, 14, 21]);
+    expect(normalizeRevisionStages([3, 14])).toEqual([1, 3, 14]);
+    expect(normalizeRevisionStages([11, 18])).toEqual([1, 11, 18]);
   });
 });

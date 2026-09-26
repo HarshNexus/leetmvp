@@ -4,7 +4,7 @@ import { Revision } from '../models/Revision';
 import { SolvedProblem } from '../models/SolvedProblem';
 import { User } from '../models/User';
 import { AuthRequest, requireAuth } from '../middleware/auth';
-import { backfillRevisionPlans, DEFAULT_REVISION_STAGES, endOfTodayInAppTime, getRevisionDueAt, getRevisionStateFromDate, isRevisionActive, normalizeActiveRevisions, normalizeRevisionStages } from '../services/revisions';
+import { backfillRevisionPlans, DEFAULT_REVISION_STAGES, endOfTodayInAppTime, getRevisionDueAt, getRevisionStateFromDate, isRevisionActive, normalizeActiveRevisions, normalizeRevisionStages, pruneRemovedRevisionStages } from '../services/revisions';
 
 const r = Router();
 r.use(requireAuth);
@@ -41,6 +41,7 @@ r.patch('/settings', async (req: AuthRequest, res, next) => {
     const revisionStages = normalizeRevisionStages(payload.intervals);
     await User.findByIdAndUpdate(req.userId, { $set: { revisionStages } });
     await backfillRevisionPlans(req.userId, revisionStages);
+    await pruneRemovedRevisionStages(req.userId, revisionStages);
     res.json({ success: true, data: { revisionStages } });
   } catch (error) {
     next(error);

@@ -9,7 +9,7 @@ const userSchema = new Schema({
     weekly: { type: Number, default: 5, min: 0, max: 5000 },
     monthly: { type: Number, default: 20, min: 0, max: 50000 },
   },
-  revisionStages: { type: [Number], default: [1, 7, 21], validate: {
+  revisionStages: { type: [Number], default: [1], validate: {
     validator(value: number[]) { return Array.isArray(value) && value.every((item) => Number.isFinite(item) && item > 0 && item < 10000); },
     message: 'Revision stage intervals must be positive numbers.',
   } },
