@@ -1,1 +1,1 @@
-{"compilerOptions":{"target":"ES2022","module":"CommonJS","moduleResolution":"Node","outDir":"dist","rootDir":"src","strict":true,"esModuleInterop":true,"skipLibCheck":true},"include":["src"]}
+{"compilerOptions":{"target":"ES2022","module":"CommonJS","moduleResolution":"Node10","ignoreDeprecations":"5.0","outDir":"dist","rootDir":"src","strict":true,"esModuleInterop":true,"skipLibCheck":true},"include":["src"]}

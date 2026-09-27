@@ -64,7 +64,7 @@ export default function Dashboard() {
   const cachedAnalytics = getCached<DashboardAnalytics>(analyticsPath);
   const [analytics, setAnalytics] = useState<DashboardAnalytics | null>(cachedAnalytics ?? null);
   const [analyticsError, setAnalyticsError] = useState('');
-  const [trendRange, setTrendRange] = useState('30d');
+  const [trendRange, setTrendRange] = useState(() => localStorage.getItem('dsa_trend_range') || '30d');
   const [selectedActivity, setSelectedActivity] = useState('');
   const [goals, setGoals] = useState(cachedAnalytics?.goals ?? { daily: 1, weekly: 5, monthly: 20 });
   const [goalMessage, setGoalMessage] = useState('');
@@ -133,7 +133,7 @@ export default function Dashboard() {
           </div>
 
           <section className="analytics-panel">
-            <div className="section-heading"><h2>Progress trends</h2><select value={trendRange} onChange={e => setTrendRange(e.target.value)}><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option><option value="6m">Last 6 months</option><option value="all">All time</option></select></div>
+            <div className="section-heading"><h2>Progress trends</h2><select value={trendRange} onChange={e => { setTrendRange(e.target.value); localStorage.setItem('dsa_trend_range', e.target.value); }}><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option><option value="6m">Last 6 months</option><option value="all">All time</option></select></div>
             <TrendChart points={analytics.trends[trendRange] || []} />
           </section>
 
@@ -177,6 +177,7 @@ function Sparkline({ points }: { points: { date: string; count: number }[] }) {
 function Heatmap({ data, selected, onSelect }: { data: { date: string; count: number }[]; selected: string; onSelect: (date: string) => void }) { const [hovered, setHovered] = useState<{ date: string; count: number } | null>(null); const active = hovered || data.find(point => point.date === selected); return <section className="analytics-panel"><div className="section-heading"><h2>Activity</h2>{active && <span className="activity-tooltip" role="status">{readableDate(active.date)}<strong>{active.count} {active.count === 1 ? 'problem' : 'problems'} solved</strong></span>}</div><div className="heatmap-heading"><span>Daily activity · Last 12 months</span><span className="heatmap-legend"><span>Less</span><i className="heat-cell heat-0" /><i className="heat-cell heat-1" /><i className="heat-cell heat-2" /><i className="heat-cell heat-3" /><i className="heat-cell heat-4" /><span>More</span></span></div><div className="heatmap">{data.map(point => <button key={point.date} className={`heat-cell heat-${Math.min(point.count, 4)} ${selected === point.date ? 'selected' : ''}`} title={`${readableDate(point.date)}: ${point.count} ${point.count === 1 ? 'problem' : 'problems'} solved`} aria-label={`${readableDate(point.date)}: ${point.count} ${point.count === 1 ? 'problem' : 'problems'} solved`} onMouseEnter={() => setHovered(point)} onMouseLeave={() => setHovered(null)} onFocus={() => setHovered(point)} onBlur={() => setHovered(null)} onClick={() => onSelect(point.date)} />)}</div></section>; }
 function Breakdown({ title, data }: { title: string; data: AnalyticsBucket[] }) { const max = Math.max(...data.map(item => item.count), 0); return <section className="analytics-panel breakdown"><h2>{title}</h2>{data.length === 0 ? <p className="muted">Start solving to build your history.</p> : [...data].sort((a, b) => b.count - a.count).map(item => <div className="breakdown-row" key={item.name}><div><span>{item.name}</span><strong>{item.count}{item.percentage !== undefined ? ` (${item.percentage}%)` : ''}</strong></div><div className="bar"><i style={{ width: `${max ? item.count / max * 100 : 0}%` }} /></div></div>)}</section>; }
 function TrendChart({ points }: { points: { date: string; count: number }[] }) {
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   if (points.length === 0) return <p className="state">Start solving to build your trend.</p>;
   const max = Math.max(...points.map(point => point.count), 1);
   const labels = points.length > 2 ? [points[0], points[Math.floor(points.length / 2)], points[points.length - 1]] : points;
@@ -187,9 +188,18 @@ function TrendChart({ points }: { points: { date: string; count: number }[] }) {
   const linePath = smoothPath(coords);
   const last = coords[coords.length - 1];
   const areaPath = `${linePath} L${last.x.toFixed(1)},${height - padBottom} L0,${height - padBottom} Z`;
+  const hovered = hoverIndex !== null ? coords[hoverIndex] : null;
+
+  const updateHover = (event: React.MouseEvent<HTMLDivElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const ratio = rect.width ? (event.clientX - rect.left) / rect.width : 0;
+    const index = Math.round(ratio * (points.length - 1));
+    setHoverIndex(Math.min(points.length - 1, Math.max(0, index)));
+  };
+
   return (
     <>
-      <div className="trend-chart">
+      <div className="trend-chart" onMouseMove={updateHover} onMouseLeave={() => setHoverIndex(null)}>
         <svg className="trend-svg" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-hidden="true" key={linePath}>
           <defs>
             <linearGradient id="trendFill" x1="0" y1="0" x2="0" y2="1">
@@ -204,19 +214,30 @@ function TrendChart({ points }: { points: { date: string; count: number }[] }) {
           </g>
           <path className="trend-area" d={areaPath} />
           <path className="trend-line" d={linePath} />
+          {hovered && <line className="trend-guide" x1={hovered.x} y1={padTop} x2={hovered.x} y2={height - padBottom} />}
         </svg>
         <div className="trend-dots">
           {coords.map((c, index) => (
             <button
               key={c.point.date}
               type="button"
-              className={`trend-dot ${index === coords.length - 1 ? 'latest' : ''}`}
+              className={`trend-dot ${index === coords.length - 1 ? 'latest' : ''} ${hoverIndex === index ? 'active' : ''}`}
               style={{ left: `${(c.x / width) * 100}%`, top: `${(c.y / height) * 100}%` }}
-              title={`${readableDate(c.point.date)}: ${c.point.count} ${c.point.count === 1 ? 'problem' : 'problems'} solved`}
+              tabIndex={-1}
               aria-label={`${readableDate(c.point.date)}: ${c.point.count} ${c.point.count === 1 ? 'problem' : 'problems'} solved`}
             />
           ))}
         </div>
+        {hovered && (
+          <div
+            className="trend-tooltip"
+            role="status"
+            style={{ left: `${(hovered.x / width) * 100}%`, top: `${(hovered.y / height) * 100}%` }}
+          >
+            {readableDate(hovered.point.date)}
+            <strong>{hovered.point.count} {hovered.point.count === 1 ? 'problem' : 'problems'} solved</strong>
+          </div>
+        )}
       </div>
       <div className="trend-labels">{labels.map(point => <span key={point.date}>{readableDate(point.date)}<strong>{point.count} solved</strong></span>)}</div>
     </>

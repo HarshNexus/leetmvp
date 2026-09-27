@@ -40,8 +40,12 @@ r.patch('/settings', async (req: AuthRequest, res, next) => {
     const payload = scheduleInput.parse(req.body);
     const revisionStages = normalizeRevisionStages(payload.intervals);
     await User.findByIdAndUpdate(req.userId, { $set: { revisionStages } });
-    await backfillRevisionPlans(req.userId, revisionStages);
-    await pruneRemovedRevisionStages(req.userId, revisionStages);
+    // Disjoint stage sets (backfill only inserts stages IN the new list,
+    // prune only deletes stages NOT in it), so these can run concurrently.
+    await Promise.all([
+      backfillRevisionPlans(req.userId, revisionStages),
+      pruneRemovedRevisionStages(req.userId, revisionStages),
+    ]);
     res.json({ success: true, data: { revisionStages } });
   } catch (error) {
     next(error);

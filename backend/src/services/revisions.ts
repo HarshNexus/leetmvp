@@ -140,9 +140,9 @@ export async function ensurePlan(
 ) {
   await normalizeActiveRevisions(userId, problemId, platform);
   const normalizedStages = normalizeRevisionStages(stages);
-  for (const stageDays of normalizedStages) {
+  await Promise.all(normalizedStages.map((stageDays) => {
     const nextReviewAt = addDays(solvedAt, stageDays);
-    await Revision.updateOne(
+    return Revision.updateOne(
       { userId, problemId, platform, stageDays },
       {
         $setOnInsert: {
@@ -158,7 +158,7 @@ export async function ensurePlan(
       },
       { upsert: true },
     );
-  }
+  }));
   return Revision.findOne({ userId, problemId, platform, stageDays: normalizedStages[0] })
     .sort({ nextReviewAt: 1, scheduledAt: 1, createdAt: 1 });
 }
@@ -193,9 +193,32 @@ export async function backfillRevisionPlans(userId: any, stages: number[]) {
       earliestByProblem.set(key, { problemId: record.problemId, platform: record.platform, solvedAt: record.solvedAt });
     }
   }
+  const normalizedStages = normalizeRevisionStages(stages);
+  const ops: any[] = [];
   for (const { problemId, platform, solvedAt } of earliestByProblem.values()) {
-    await ensurePlan(userId, problemId, platform, solvedAt, stages);
+    for (const stageDays of normalizedStages) {
+      const nextReviewAt = addDays(solvedAt, stageDays);
+      ops.push({
+        updateOne: {
+          filter: { userId, problemId, platform, stageDays },
+          update: {
+            $setOnInsert: {
+              userId,
+              problemId,
+              platform,
+              stage: `${stageDays}-day`,
+              stageDays,
+              scheduledAt: nextReviewAt,
+              nextReviewAt,
+              status: 'active',
+            },
+          },
+          upsert: true,
+        },
+      });
+    }
   }
+  if (ops.length) await Revision.bulkWrite(ops, { ordered: false });
 }
 
 /**

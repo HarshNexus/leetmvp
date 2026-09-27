@@ -327,8 +327,15 @@ button:disabled{opacity:.55;cursor:wait;transform:none;box-shadow:none}
   background:var(--bg);border:2px solid var(--accent-bg);cursor:pointer;opacity:0;box-shadow:none;
   transition:opacity .12s,transform .12s;
 }
-.trend-dot:hover,.trend-dot:focus-visible{opacity:1;transform:translate(-50%,-50%) scale(1.35);box-shadow:none}
+.trend-dot:hover,.trend-dot:focus-visible,.trend-dot.active{opacity:1;transform:translate(-50%,-50%) scale(1.35);box-shadow:none}
 .trend-dot.latest{opacity:1;background:var(--accent-bg)}
+.trend-guide{stroke:var(--border-strong);stroke-width:1;stroke-dasharray:3 3;vector-effect:non-scaling-stroke;pointer-events:none}
+.trend-tooltip{
+  position:absolute;transform:translate(-50%,-100%) translateY(-12px);z-index:3;display:flex;flex-direction:column;gap:3px;min-width:150px;
+  padding:9px 11px;color:var(--text-dim);background:var(--surface);border:1px solid var(--border-strong);
+  border-radius:9px;box-shadow:var(--shadow-sm);font-size:12px;text-align:left;white-space:nowrap;pointer-events:none;
+}
+.trend-tooltip strong{color:var(--text);font-weight:700}
 .trend-labels{display:flex;justify-content:space-between;gap:10px;color:var(--text-faint);font-size:11px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)}
 .trend-labels span{display:flex;flex-direction:column;gap:3px}
 .trend-labels strong{color:var(--text);font-size:13px;font-family:var(--font-display);font-weight:600}
