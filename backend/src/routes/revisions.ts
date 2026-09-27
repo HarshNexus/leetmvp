@@ -46,7 +46,10 @@ r.patch('/settings', async (req: AuthRequest, res, next) => {
       backfillRevisionPlans(req.userId, revisionStages),
       pruneRemovedRevisionStages(req.userId, revisionStages),
     ]);
-    res.json({ success: true, data: { revisionStages } });
+    // Returning the refreshed rows here saves the frontend a second full
+    // GET /revisions round trip right after this call.
+    const revisions = await fetchRevisionRows(req.userId);
+    res.json({ success: true, data: { revisionStages, revisions } });
   } catch (error) {
     next(error);
   }
@@ -71,18 +74,20 @@ r.get('/today', async (req: AuthRequest, res, next) => {
   }
 });
 
+async function fetchRevisionRows(userId: unknown) {
+  await normalizeActiveRevisions(userId);
+  const revisions = await Revision.find({ userId }).populate('problemId').sort({ nextReviewAt: 1, scheduledAt: 1 }).lean();
+  const solvedRecords = await SolvedProblem.find({ userId }).select('problemId solvedAt').sort({ solvedAt: 1 }).lean();
+  const solvedMap = new Map<string, Date>();
+  for (const record of solvedRecords) {
+    solvedMap.set(String(record.problemId), new Date(record.solvedAt));
+  }
+  return buildRows(revisions, solvedMap);
+}
+
 r.get('/', async (req: AuthRequest, res, next) => {
   try {
-    await normalizeActiveRevisions(req.userId);
-    const revisions = await Revision.find({ userId: req.userId }).populate('problemId').sort({ nextReviewAt: 1, scheduledAt: 1 }).lean();
-    const solvedRecords = await SolvedProblem.find({ userId: req.userId }).select('problemId solvedAt').sort({ solvedAt: 1 }).lean();
-    const solvedMap = new Map<string, Date>();
-    for (const record of solvedRecords) {
-      solvedMap.set(String(record.problemId), new Date(record.solvedAt));
-    }
-
-    const rows = buildRows(revisions, solvedMap);
-
+    const rows = await fetchRevisionRows(req.userId);
     res.json({ success: true, data: rows });
   } catch (error) {
     next(error);

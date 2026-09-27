@@ -244,7 +244,7 @@ const activeOnly = (allRows: Revision[]) => allRows.filter((row) => {
   return true;
 });
 
-function RevisionScheduleCard({ onChange }: { onChange: () => void }) {
+function RevisionScheduleCard({ onChange }: { onChange: (rows: Revision[]) => void }) {
   const [days, setDays] = useState<number[]>([1]);
   const [loading, setLoading] = useState(true);
   const [newDay, setNewDay] = useState('');
@@ -258,7 +258,7 @@ function RevisionScheduleCard({ onChange }: { onChange: () => void }) {
     try {
       const result = await api.updateRevisionSettings([...new Set(next)].sort((a, b) => a - b));
       setDays(result.revisionStages);
-      onChange();
+      onChange(result.revisions);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Unable to update schedule.');
     } finally {
@@ -503,7 +503,7 @@ export default function Revisions() {
           <div className="revision-metric"><span>This Week</span><strong>{counts.thisWeek}</strong></div>
           <div className="revision-metric"><span>All</span><strong>{counts.all}</strong></div>
         </div>
-        <RevisionScheduleCard onChange={() => void load()} />
+        <RevisionScheduleCard onChange={(updatedRows) => { setRawRows(updatedRows); setRows(activeOnly(updatedRows)); }} />
       </section>
 
       <section className="panel revision-panel">
