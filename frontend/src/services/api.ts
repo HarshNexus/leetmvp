@@ -21,7 +21,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
       },
     });
     const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(body?.error?.message || 'Request failed');
+    if (!response.ok) throw Object.assign(new Error(body?.error?.message || 'Request failed'), { status: response.status });
     if (isGet) getCache.set(path, body?.data);
     return body?.data as T;
   })();
@@ -31,7 +31,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 export const api = {
   login: (email: string, password: string) => request<AuthResponse>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
   register: (name: string, email: string, password: string) => request<AuthResponse>('/auth/register', { method: 'POST', body: JSON.stringify({ name, email, password }) }),
-  me: () => request<{ user: User }>('/auth/me', { signal: AbortSignal.timeout(5000) }),
+  me: () => request<{ user: User }>('/auth/me'),
   logout: () => request('/auth/logout', { method: 'POST' }),
   authorizeExtension: (clientId: string, redirectUri: string) => request<{ code: string }>('/auth/extension/authorize', { method: 'POST', body: JSON.stringify({ clientId, redirectUri }) }),
   problems: () => request<{ items: SolvedProblem[] }>('/problems'),
